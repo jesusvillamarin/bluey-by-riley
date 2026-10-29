@@ -224,6 +224,93 @@ final class ClaudeVoiceSessionTests: XCTestCase {
         XCTAssertEqual(session.recentTurns.last?.user, "q11")
     }
 
+    func testStopCancelsQueuedAsk() async throws {
+        // Each spawn appends its PID to a file; a queued ask must not cause a second spawn after stop().
+        let spawns = directory.appendingPathComponent("spawns")
+        let session = try session("""
+        echo $$ >> '\(spawns.path)'
+        while IFS= read -r line; do sleep 5; done
+        """)
+        let started = Date()
+        let first = Task { try await session.ask("a") { _ in } }
+        let second = Task { try await session.ask("b") { _ in } }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        session.stop()
+        for task in [first, second] {
+            do {
+                _ = try await task.value
+                XCTFail("expected .interrupted")
+            } catch {
+                XCTAssertEqual(error as? ClaudeVoiceSession.Failure, .interrupted)
+            }
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let count = ((try? String(contentsOf: spawns, encoding: .utf8)) ?? "").split(separator: "\n").count
+        XCTAssertEqual(count, 1, "stop() must not let a queued ask respawn claude")
+        XCTAssertTrue(session.recentTurns.isEmpty)
+    }
+
+    func testAskAfterStopStartsFresh() async throws {
+        let session = try session(replying)
+        session.stop()
+        let reply = try await session.ask("x") { _ in }
+        XCTAssertEqual(reply, "Hi")
+    }
+
+    func testWarmUpRespawnStillReplays() async throws {
+        // Echoes the user's content, one turn per process.
+        let session = try session("""
+        IFS= read -r line
+        content=$(printf '%s' "$line" | sed 's/.*"content":"\\(.*\\)","role".*/\\1/')
+        printf '%s\\n' "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"$content\\"}"
+        """)
+        _ = try await session.ask("a") { _ in }
+        try await Task.sleep(nanoseconds: 400_000_000) // the one-shot fake exits
+        session.warmUp() // respawns while idle
+        let second = try await session.ask("b") { _ in }
+        XCTAssertTrue(second.hasPrefix("Earlier in this conversation:"), second)
+        XCTAssertTrue(second.contains("User: a"), second)
+    }
+
+    func testSuccessResultAfterInterruptStillInterrupted() async throws {
+        let session = try session("""
+        while IFS= read -r line; do
+          case "$line" in
+            *control_request*) echo '\(Self.ok)' ;;
+          esac
+        done
+        """)
+        Task { try? await Task.sleep(nanoseconds: 100_000_000); session.interrupt() }
+        await assertAskThrows(session, .interrupted)
+        XCTAssertTrue(session.recentTurns.isEmpty)
+    }
+
+    func testGrandchildHoldingStdoutFallsBackToExit() async throws {
+        // The fake exits at once but a background job keeps its stdout open, so there is no EOF.
+        let session = try session("""
+        IFS= read -r line
+        sleep 4 &
+        exit 0
+        """)
+        let started = Date()
+        await assertAskThrows(session, .exited)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3.5)
+    }
+
+    func testShellLookupTakesLastAbsoluteLine() throws {
+        let shell = try fake("echo 'banner'\necho /bin/sh\necho 'trailing noise'\necho /bin/sh")
+        XCTAssertEqual(ClaudeBinary.runShellLookup(shell: shell.path), "/bin/sh")
+    }
+
+    func testShellLookupBudgetKillsShellThatIgnoresSigterm() throws {
+        // Ignored signals survive exec, so this `sleep` ignores SIGTERM like an interactive zsh does.
+        let shell = try fake("trap '' TERM\nexec sleep 30")
+        let started = Date()
+        XCTAssertNil(ClaudeBinary.runShellLookup(shell: shell.path, budget: 0.5))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+    }
+
     func testFailureTexts() {
         XCTAssertEqual(ClaudeVoiceSession.Failure.notInstalled.errorDescription, "Install Claude Code to use Subscription voice, or switch Voice to Fast in the menu bar.")
         XCTAssertEqual(ClaudeVoiceSession.Failure.exited.errorDescription, "Claude stopped. Open Terminal, run `claude` and make sure you're signed in.")

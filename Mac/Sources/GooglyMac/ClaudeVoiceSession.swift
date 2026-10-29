@@ -14,25 +14,40 @@ enum ClaudeBinary {
     /// Runs `$SHELL -ilc 'command -v claude'` off the main thread (5 s budget) and remembers the answer for `locate()`.
     static func lookUpInShell() async {
         guard shellPath.value == nil else { return }
-        let found = await Task.detached(priority: .utility) { runShellLookup() }.value
+        let found = await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            DispatchQueue.global(qos: .utility).async { continuation.resume(returning: runShellLookup()) }
+        }
         if let found { shellPath.value = found }
     }
 
-    private static func runShellLookup() -> String? {
+    /// Blocking. Interactive shells ignore SIGTERM and rc files can leave background jobs holding the pipe,
+    /// so the deadline is enforced with SIGKILL and by not waiting for EOF past it.
+    static func runShellLookup(shell: String? = nil, budget: TimeInterval = 5) -> String? {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh")
+        process.executableURL = URL(fileURLWithPath: shell ?? ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh")
         process.arguments = ["-ilc", "command -v claude"]
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
+        let collected = Locked(Data())
+        let finished = DispatchSemaphore(value: 0)
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty { handle.readabilityHandler = nil; finished.signal() } else { collected.value.append(data) }
+        }
+        // If the shell exits but a background job keeps the pipe open, don't wait out the whole budget.
+        process.terminationHandler = { _ in
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { finished.signal() }
+        }
         guard (try? process.run()) != nil else { return nil }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 5) { if process.isRunning { process.terminate() } }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        if finished.wait(timeout: .now() + budget) == .timedOut, process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
+        output.fileHandleForReading.readabilityHandler = nil
         // Interactive shells may print banners; the path is the last absolute line.
-        let path = String(decoding: data, as: UTF8.self).split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-            .last { $0.hasPrefix("/") }
+        let path = String(decoding: collected.value, as: UTF8.self).split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }.last { $0.hasPrefix("/") }
         return path.flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil }
     }
 }
@@ -45,6 +60,7 @@ private final class Locked<Value>: @unchecked Sendable {
     var value: Value {
         get { lock.lock(); defer { lock.unlock() }; return stored }
         set { lock.lock(); defer { lock.unlock() }; stored = newValue }
+        _modify { lock.lock(); defer { lock.unlock() }; yield &stored }
     }
 }
 
@@ -94,8 +110,11 @@ final class ClaudeVoiceSession {
     private var buffer = Data()
     private var turn: Turn?
     private var hasSpawned = false
+    private var needsReplay = false
+    /// Bumped by `stop()`; asks that started before it end with `.interrupted` instead of running or recording.
+    private var generation = 0
     private var busy = false
-    private var queue: [CheckedContinuation<Void, Never>] = []
+    private var queue: [CheckedContinuation<Bool, Never>] = []
 
     private(set) var recentTurns: [(user: String, reply: String)] = []
 
@@ -109,15 +128,19 @@ final class ClaudeVoiceSession {
 
     /// Starts the process ahead of the first question so it's ready; failures surface on `ask`.
     func warmUp() {
-        _ = try? ensureRunning()
+        try? ensureRunning()
     }
 
     func ask(_ text: String, onEvent: @escaping (ClaudeEvent) -> Void) async throws -> String {
-        await acquire()
+        let started = generation
+        guard await acquire() else { throw Failure.interrupted }
         defer { release() }
-        let respawned = try ensureRunning()
+        guard started == generation else { throw Failure.interrupted }
+        try ensureRunning()
         var message = text
-        if respawned, !recentTurns.isEmpty {
+        let replay = needsReplay
+        needsReplay = false
+        if replay, !recentTurns.isEmpty {
             let lines = recentTurns.map { "User: \($0.user)\nYou: \($0.reply)" }.joined(separator: "\n")
             message = "Earlier in this conversation:\n" + lines + "\n\n" + text
         }
@@ -125,8 +148,12 @@ final class ClaudeVoiceSession {
             let turn = Turn(user: text, onEvent: onEvent, continuation: continuation)
             self.turn = turn
             armTimer(turn)
-            if !write(ClaudeStream.userLine(message)) { finish(turn, .failure(Failure.exited)) }
+            if !write(ClaudeStream.userLine(message)) {
+                discardProcess()
+                finish(turn, .failure(Failure.exited))
+            }
         }
+        guard started == generation else { throw Failure.interrupted }
         recentTurns.append((user: text, reply: reply))
         if recentTurns.count > Self.maxRecentTurns { recentTurns.removeFirst(recentTurns.count - Self.maxRecentTurns) }
         return reply
@@ -143,26 +170,32 @@ final class ClaudeVoiceSession {
     func stop() {
         discardProcess()
         hasSpawned = false
+        needsReplay = false
         recentTurns = []
+        generation += 1
         if let turn { finish(turn, .failure(Failure.interrupted)) }
+        let waiting = queue
+        queue = []
+        for waiter in waiting { waiter.resume(returning: false) }
     }
 
     // MARK: Serial asks
 
-    private func acquire() async {
-        if !busy { busy = true; return }
-        await withCheckedContinuation { queue.append($0) }
+    /// False when `stop()` woke this waiter without handing it the slot.
+    private func acquire() async -> Bool {
+        if !busy { busy = true; return true }
+        return await withCheckedContinuation { queue.append($0) }
     }
 
     private func release() {
-        if queue.isEmpty { busy = false } else { queue.removeFirst().resume() }
+        if queue.isEmpty { busy = false } else { queue.removeFirst().resume(returning: true) }
     }
 
     // MARK: The process
 
-    /// Spawns if needed. Returns true when this replaced a process that had died (the conversation must be replayed).
-    private func ensureRunning() throws -> Bool {
-        if process != nil { return false }
+    /// Spawns if needed. Replacing a process that had died sets `needsReplay` so the next ask carries the history.
+    private func ensureRunning() throws {
+        if process != nil { return }
         guard let url = binary() else { throw Failure.notInstalled }
         let process = Process()
         process.executableURL = url
@@ -184,23 +217,23 @@ final class ClaudeVoiceSession {
                 if data.isEmpty { self.ended(process) } else { self.received(data, from: process) }
             }
         }
-        // The last bytes of stdout can still be in flight when the exit is reported, so give them a moment.
+        // EOF on stdout is what normally ends the turn (it arrives after every chunk). This is only the fallback
+        // for a grandchild that keeps stdout open after claude exits.
         process.terminationHandler = { [weak self] process in
             Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 150_000_000)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
                 self?.ended(process)
             }
         }
         do { try process.run() } catch { throw Failure.exited }
         // A write to a dead child must throw, not raise SIGPIPE.
         _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
-        let respawned = hasSpawned
+        if hasSpawned { needsReplay = true }
         hasSpawned = true
         self.process = process
         output = stdout
         input = stdin.fileHandleForWriting
         buffer = Data()
-        return respawned
     }
 
     /// Forgets the current process without reporting anything; its handlers become no-ops.
