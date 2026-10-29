@@ -126,6 +126,14 @@ struct RootView: View {
         live.requestToken = { [link] done in
             link.request(Packet(command: "realtimeToken")) { reply in done(reply?.text) }
         }
+        live.startVoice = { [link] done in
+            link.request(Packet(command: "voiceStart")) { reply in done(reply?.text) }
+        }
+        live.requestScribeToken = { [link] done in
+            link.request(Packet(command: "scribeToken")) { reply in done(reply?.text) }
+        }
+        live.sendToMac = { [link] packet in link.send(packet) }
+        link.onVoice = { [live] packet in live.receiveVoice(packet) }
         live.runTool = { [link] name, arguments, done in
             link.request(Packet(command: "tool", tool: name, text: arguments)) { reply in
                 done(reply?.text ?? "The Mac didn't answer.", reply?.image)

@@ -17,6 +17,8 @@ final class MacLink: ObservableObject {
     @Published private(set) var preferredMac: String? = UserDefaults.standard.string(forKey: "preferredMac")
     /// Commands from the Mac, like "wake" and "sleep".
     var onCommand: ((String, String?) -> Void)?
+    /// `voice*` packets from the Mac that aren't the answer to a request (a reply streaming in, a report).
+    var onVoice: ((Packet) -> Void)?
     private var waiting: [String: (Packet?) -> Void] = [:]
 
     var onFocusState: ((String) -> Void)?
@@ -120,6 +122,8 @@ final class MacLink: ObservableObject {
             if command == "focusState", let text = packet.text { self.onFocusState?(text); return }
             if let callID = packet.callID, let done = self.waiting.removeValue(forKey: callID) {
                 done(packet)
+            } else if command.hasPrefix("voice") {
+                self.onVoice?(packet)
             } else {
                 self.onCommand?(command, packet.text)
             }

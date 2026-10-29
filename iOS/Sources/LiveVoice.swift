@@ -3,6 +3,8 @@ import Foundation
 
 /// A live session with OpenAI's Realtime API, running on the phone. Once he's awake the mic is on the whole
 /// time; only speech captured while holding is sent. Prior held turns remain conversation context.
+/// In Subscription mode (the Mac says so when he wakes) held audio goes to ElevenLabs Scribe instead, the final
+/// transcript goes to the Mac, and the reply streams back as `voice*` packets.
 /// He never talks out loud: replies are text (speech bubbles on the Mac) with a little cartoon chirp here.
 /// Tools (look at the screen, point) run on the Mac.
 final class LiveVoice: NSObject, ObservableObject {
@@ -23,10 +25,30 @@ final class LiveVoice: NSObject, ObservableObject {
     private var lastEvent = ""
     private var toolNames: [String] = []
 
+    /// Subscription mode state. `mode` is set when he wakes and back to Fast when he sleeps.
+    private(set) var mode: VoiceMode = .fast
+    private var keyterms: [String] = []
+    private var ledger = VoiceTurnLedger()
+    private var timings = VoiceTurnTimings()
+    private var listener: ScribeListener?
+    /// A hold is in progress or its transcript is still on the way; false once it finished, failed or was dropped.
+    private var scribeOpen = false
+    /// Let go before the token arrived: release as soon as the listener exists.
+    private var releasePending = false
+    private var watchdog: UUID?
+    private var wakeRequest = UUID()
+    private var chirped = false
+
     static let model = GooglyModels.realtime
 
     /// Asks the Mac for a short-lived key. Calls back with nil on failure.
     var requestToken: ((@escaping (String?) -> Void) -> Void)?
+    /// Asks the Mac which voice mode to use (its `voiceStart` reply text); nil from an older Mac means Fast.
+    var startVoice: ((@escaping (String?) -> Void) -> Void)?
+    /// Asks the Mac for a single-use Scribe token for this hold. Calls back with nil on failure.
+    var requestScribeToken: ((@escaping (String?) -> Void) -> Void)?
+    /// Sends a packet to the Mac (`voiceAsk`, `voiceCancel`).
+    var sendToMac: ((Packet) -> Void)?
     /// Runs a tool on the Mac: (name, JSON arguments) → (output text, optional JPEG base64).
     var runTool: ((String, String, @escaping (String, String?) -> Void) -> Void)?
     /// What he's saying, as it streams in. `done` is true when the reply finished.
@@ -115,14 +137,28 @@ final class LiveVoice: NSObject, ObservableObject {
                     self.feedback = "Couldn't start the microphone. Check iPhone Settings > Bluey > Microphone."
                     self.onCaption?(self.feedback, true); self.sleep(); return
                 }
-                guard let requestToken = self.requestToken else { self.sleep(); return }
-                requestToken { token in
+                guard let startVoice = self.startVoice else { self.connectFast(); return }
+                let request = UUID()
+                self.wakeRequest = request
+                startVoice { text in
                     DispatchQueue.main.async {
-                        guard self.state == .waking else { return }
-                        guard let token else { self.feedback = "Voice could not connect. Check the Mac and OpenAI key."; self.onCaption?(self.feedback, true); self.sleep(); return }
-                        self.connect(token)
+                        guard self.wakeRequest == request, self.wantAwake, self.state == .waking else { return }
+                        let reply = VoiceStartReply(text: text)
+                        if reply.mode == .subscription { self.wakeSubscription(reply) } else { self.connectFast() }
                     }
                 }
+            }
+        }
+    }
+
+    /// Fast mode: get an OpenAI key from the Mac and open the Realtime socket.
+    private func connectFast() {
+        guard let requestToken else { sleep(); return }
+        requestToken { token in
+            DispatchQueue.main.async {
+                guard self.state == .waking else { return }
+                guard let token else { self.feedback = "Voice could not connect. Check the Mac and OpenAI key."; self.onCaption?(self.feedback, true); self.sleep(); return }
+                self.connect(token)
             }
         }
     }
@@ -133,6 +169,15 @@ final class LiveVoice: NSObject, ObservableObject {
         reconnecting = false
         recorder.finish()
         if wasRunning { onSessionEnd?() }
+        listener?.cancel()
+        listener = nil
+        scribeOpen = false
+        releasePending = false
+        watchdog = nil
+        ledger.abandon()
+        wakeRequest = UUID()
+        mode = .fast
+        keyterms = []
         askedItems = []
         awaitingQuestion = false
         socket?.cancel(with: .normalClosure, reason: nil)
@@ -157,6 +202,7 @@ final class LiveVoice: NSObject, ObservableObject {
 
     /// Says a quick hi (for checking the chirp volume).
     func sayHi() {
+        if mode == .subscription { chirp(syllables: 3); return }
         guard socket != nil else { wake(); return }
         send(["type": "response.create", "response": ["instructions": "Reply with a quick, cheerful hi in under eight words."]])
     }
@@ -213,6 +259,13 @@ final class LiveVoice: NSObject, ObservableObject {
 
     /// You pressed and held the screen: what you say now is the question.
     func beginAsk() {
+        timings.begin()
+        if mode == .subscription {
+            holding = true
+            turnAudio.begin()
+            startScribeTurn()
+            return
+        }
         holding = true
         turnAudio.begin()
         awaitingTranscript = nil
@@ -231,6 +284,7 @@ final class LiveVoice: NSObject, ObservableObject {
     func endAsk() {
         guard holding else { return }
         holding = false
+        if mode == .subscription { releaseScribe(); return }
         guard socketReady else { askWhenReady = true; return }
         ask()
     }
@@ -472,6 +526,7 @@ final class LiveVoice: NSObject, ObservableObject {
 
     /// Back to listening once he's replied and chirped (or asleep, if he said goodbye).
     private func finishIfQuiet() {
+        guard mode == .fast else { return }  // Subscription state follows the Mac's packets, not the chirp
         guard pendingBuffers == 0, !responseActive, toolsRunning == 0 else { return }
         if sleepAfterReply { sleep(); return }
         if state == .speaking || state == .thinking { setState(holding ? .asking : .listening) }
@@ -552,7 +607,11 @@ final class LiveVoice: NSObject, ObservableObject {
         DispatchQueue.main.async {
             self.microphoneBuffers += 1
             self.inputLevel = min(1, rms * 12)
-            if self.holding, let live = self.turnAudio.append(data, ready: self.socketReady) { self.appendAudio(live) }
+            if self.holding, self.mode == .subscription {
+                if self.scribeOpen {
+                    if let listener = self.listener { listener.send(data) } else { _ = self.turnAudio.append(data, ready: false) }
+                }
+            } else if self.holding, let live = self.turnAudio.append(data, ready: self.socketReady) { self.appendAudio(live) }
             if Date().timeIntervalSince(self.lastDiagnostic) >= 2 { self.writeDiagnostics() }
         }
     }
@@ -564,11 +623,12 @@ final class LiveVoice: NSObject, ObservableObject {
 
     private func writeDiagnostics() {
         lastDiagnostic = Date()
-        let info: [String: Any] = ["state": String(describing: state), "socketReady": socketReady,
+        var info: [String: Any] = ["state": String(describing: state), "socketReady": socketReady,
             "microphoneBuffers": microphoneBuffers, "recordedTurnBytes": turnAudio.recordedBytes,
             "sentAudioBytes": sentAudioBytes, "inputLevel": inputLevel,
             "lastEvent": lastEvent, "lastErrorCode": lastErrorCode, "tools": toolNames,
-            "updatedAt": Date().timeIntervalSince1970]
+            "mode": mode.rawValue, "updatedAt": Date().timeIntervalSince1970]
+        if mode == .subscription { info["timings"] = timings.seconds }
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("bluey-voice-status.json")
         if let data = try? JSONSerialization.data(withJSONObject: info) { try? data.write(to: url, options: .atomic) }
     }
@@ -615,5 +675,189 @@ final class LiveVoice: NSObject, ObservableObject {
                 self.finishIfQuiet()
             }
         }
+    }
+}
+
+// MARK: Subscription mode
+
+extension LiveVoice {
+    /// The Mac chose Subscription: no OpenAI socket, the mic is already on. A hold that started while he was
+    /// asleep carries on as this mode's first turn.
+    fileprivate func wakeSubscription(_ reply: VoiceStartReply) {
+        mode = .subscription
+        keyterms = reply.keyterms
+        onSessionStart?()
+        chirp(syllables: 2)
+        let held = holding
+        guard held || askWhenReady else { setState(.listening); writeDiagnostics(); return }
+        askWhenReady = false
+        startScribeTurn()
+        if !held { releasePending = true }
+        writeDiagnostics()
+    }
+
+    /// A hold begins: drops whatever the last one left behind, then fetches a fresh token and opens Scribe.
+    /// Audio captured meanwhile waits in `turnAudio`.
+    fileprivate func startScribeTurn() {
+        listener?.cancel()
+        listener = nil
+        let macSpeaking = state == .speaking
+        if let unanswered = ledger.begin() {
+            sendToMac?(Packet(command: "voiceCancel", speech: unanswered))
+        } else if macSpeaking {
+            sendToMac?(Packet(command: "voiceCancel", speech: 0))  // a turn the Mac started
+        }
+        watchdog = nil
+        chirped = false
+        releasePending = false
+        scribeOpen = true
+        feedback = "Listening… let go when you're done."
+        setState(.asking)
+        let turn = ledger.turn
+        guard let requestScribeToken else { scribeFailed("Voice could not connect. Check the Mac."); return }
+        requestScribeToken { [weak self] token in
+            DispatchQueue.main.async {
+                guard let self, self.ledger.turn == turn, self.scribeOpen, self.listener == nil else { return }
+                guard let token else { self.scribeFailed("Voice could not connect. Check the Mac and the ElevenLabs key."); return }
+                self.openListener(token, turn: turn)
+            }
+        }
+    }
+
+    private func openListener(_ token: String, turn: Int) {
+        let listener = ScribeListener(token: token, keyterms: keyterms)
+        listener.onStarted = { [weak self] in
+            guard let self, self.ledger.turn == turn else { return }
+            self.timings.mark(.scribeStarted)
+            self.writeDiagnostics()
+        }
+        listener.onEvent = { [weak self] event in
+            guard let self, self.ledger.turn == turn, self.scribeOpen else { return }
+            self.scribeEvent(event)
+        }
+        self.listener = listener
+        listener.start()
+        for data in turnAudio.connected() { listener.send(data) }
+        if releasePending { releasePending = false; releaseScribe() }
+    }
+
+    /// You let go (or had already, before the token arrived).
+    fileprivate func releaseScribe() {
+        guard scribeOpen else { return }
+        timings.mark(.released)
+        guard let listener else { releasePending = true; return }
+        if turnAudio.overflowed {
+            scribeFailed("Voice took too long to connect. Hold Bluey and try again.")
+            return
+        }
+        switch listener.release() {
+        case .send, .wait:
+            feedback = "Got your audio. Working out the task…"
+            setState(.thinking)
+        case .tooShort:
+            scribeFailed("I didn't catch that. Hold Bluey while you say the task.")
+        case .overflowed:
+            scribeFailed("Voice took too long to connect. Hold Bluey and try again.")
+        }
+    }
+
+    /// Ends the hold without asking the Mac anything.
+    private func scribeFailed(_ message: String) {
+        listener?.cancel()
+        listener = nil
+        scribeOpen = false
+        releasePending = false
+        feedback = message
+        setState(.listening)
+    }
+
+    private func scribeEvent(_ event: ScribeTurn.Event) {
+        switch event {
+        case .partial:
+            break
+        case .failed(let type):
+            listener = nil
+            scribeFailed("Voice transcription failed (\(type)). Try again.")
+        case .final(let text):
+            listener = nil
+            scribeOpen = false
+            timings.mark(.finalTranscript)
+            let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !words.isEmpty else {
+                feedback = "I didn't hear a task. Hold Bluey while you say it."
+                setState(.listening)
+                return
+            }
+            let item = UUID().uuidString
+            onUserTurn?(item, true)
+            onUserWords?(item, words, true)
+            feedback = "Heard: " + words
+            ledger.asked()
+            sendToMac?(Packet(command: "voiceAsk", speech: ledger.turn, text: words))
+            setState(.thinking)
+            armWatchdog()
+        }
+    }
+
+    /// Gives up if the Mac goes quiet; every packet for the turn restarts it, so long tool turns survive.
+    private func armWatchdog() {
+        let id = UUID()
+        watchdog = id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
+            guard let self, self.watchdog == id, self.ledger.awaitingReply else { return }
+            let stale = self.ledger.turn
+            self.ledger.abandon()
+            self.watchdog = nil
+            self.chirped = false
+            self.sendToMac?(Packet(command: "voiceCancel", speech: stale))
+            self.feedback = "Bluey took too long to answer. Hold and try again."
+            self.setState(.listening)
+        }
+    }
+
+    /// A `voice*` packet from the Mac: the reply to your turn, or one of his own (`speech` 0, a Codex update).
+    func receiveVoice(_ packet: Packet) {
+        guard mode == .subscription, wantAwake, state != .asleep, state != .waking, ledger.accepts(packet.speech) else { return }
+        let user = ledger.isUserTurn(packet.speech)
+        // His own turns never disturb a hold or the wait for your answer.
+        let canShow = user ? (state == .thinking || state == .speaking)
+                           : (!ledger.awaitingReply && (state == .listening || state == .speaking))
+        switch packet.command {
+        case "voiceDelta":
+            if user { timings.mark(.firstDelta) }
+            let text = packet.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard canShow, !text.isEmpty else { break }
+            setState(.speaking)
+            chirpOnce(for: text)
+        case "voiceTool":
+            toolNames.append(packet.tool ?? ""); toolNames = Array(toolNames.suffix(8))
+        case "voiceDone":
+            let text = packet.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if user { timings.mark(.done) }
+            ledger.finished(packet.speech)
+            if !text.isEmpty {
+                onReply?(text)
+                if canShow { chirpOnce(for: text) }
+            }
+            chirped = false
+            if canShow { setState(.listening) }
+        case "voiceError":
+            feedback = packet.text ?? "Something went wrong."
+            ledger.finished(packet.speech)
+            chirped = false
+            if canShow { setState(.listening) }
+        case "voiceReport":
+            if let report = packet.text, !report.isEmpty { onReport?(report) }
+        default:
+            break
+        }
+        if ledger.awaitingReply { armWatchdog() } else { watchdog = nil }
+        writeDiagnostics()
+    }
+
+    private func chirpOnce(for text: String) {
+        guard !chirped else { return }
+        chirped = true
+        chirp(syllables: min(max(text.split(separator: " ").count, 3), 5))
     }
 }
