@@ -98,7 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         HotKeys.shared.register(keyCode: kVK_ANSI_S) { [weak self] in self?.stopActions() }
 
         if Keychain.get(.openai) == nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.editKeys() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.editKey(.openai) }
         }
     }
 
@@ -289,20 +289,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         restartIfAwake()
     }
 
-    @objc private func editKeys() {
+    @objc private func editKeyItem(_ item: NSMenuItem) {
+        if let raw = item.representedObject as? String, let key = Keychain.Key(rawValue: raw) { editKey(key) }
+    }
+
+    private func editKey(_ key: Keychain.Key) {
+        let (name, placeholder) = key == .openai ? ("OpenAI", "sk-…") : ("ElevenLabs", "sk_…")
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "OpenAI API Key"
+        alert.messageText = "\(name) API Key"
         alert.informativeText = "Saved privately on this Mac (not in the project files). The phone only ever gets short-lived keys."
         let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
-        field.placeholderString = Keychain.get(.openai) == nil ? "sk-…" : "Key saved. Paste a new one to replace it."
+        field.placeholderString = Keychain.get(key) == nil ? placeholder : "Key saved. Paste a new one to replace it."
         alert.accessoryView = field
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let key = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !key.isEmpty { Keychain.set(.openai, key) }
+        let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !value.isEmpty { Keychain.set(key, value) }
+    }
+
+    @objc private func setVoiceMode(_ item: NSMenuItem) {
+        guard let raw = item.representedObject as? String, let mode = VoiceMode(rawValue: raw), mode != settings.voiceMode else { return }
+        settings.voiceMode = mode
+        restartIfAwake()  // his ears and brain change with this switch
     }
 
     @objc private func setMood(_ item: NSMenuItem) {
@@ -396,7 +407,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(item("Open Meeting Notes", #selector(openNotes)))
         menu.addItem(item("Personality…", #selector(editPersonality)))
-        menu.addItem(item("OpenAI Key…", #selector(editKeys)))
+        for (key, title) in [(Keychain.Key.openai, "OpenAI Key…"), (.elevenlabs, "ElevenLabs Key…")] {
+            let k = item(title, #selector(editKeyItem(_:)))
+            k.representedObject = key.rawValue
+            menu.addItem(k)
+        }
+
+        let voiceMenu = NSMenu()
+        for (mode, title) in [(VoiceMode.fast, "Fast (OpenAI Realtime)"), (.subscription, "Subscription (Claude + ElevenLabs)")] {
+            let v = item(title, #selector(setVoiceMode(_:)))
+            v.representedObject = mode.rawValue
+            v.state = settings.voiceMode == mode ? .on : .off
+            voiceMenu.addItem(v)
+        }
+        menu.addItem(submenu("Voice", voiceMenu))
         menu.addItem(.separator())
 
         let trailMenu = NSMenu()

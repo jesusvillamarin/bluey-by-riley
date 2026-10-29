@@ -48,6 +48,12 @@ final class Settings {
         set { defaults.set(newValue.rawValue, forKey: "trail"); onChange?() }
     }
 
+    /// Fast talks through OpenAI Realtime; Subscription uses Claude and ElevenLabs.
+    var voiceMode: VoiceMode {
+        get { VoiceMode(rawValue: defaults.string(forKey: "voiceMode") ?? "") ?? .fast }
+        set { defaults.set(newValue.rawValue, forKey: "voiceMode"); onChange?() }
+    }
+
     /// The mood picked by hand in the menu.
     var mood: Mood {
         get { Mood(rawValue: defaults.string(forKey: "mood") ?? "") ?? .listening }

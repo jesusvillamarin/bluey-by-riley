@@ -5,6 +5,7 @@ import Foundation
 enum Keychain {
     enum Key: String {
         case openai
+        case elevenlabs
     }
 
     private static var cache: [String: String]?
