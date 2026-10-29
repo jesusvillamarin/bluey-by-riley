@@ -132,7 +132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             state: { [weak host] in host?.focusState },
             send: { [weak self] packet in self?.server.broadcast(packet) },
             caption: { [weak host] text, done in
-                if done { host?.showReply(text ?? "") } else { host?.streamCaption(text ?? "") }
+                if let text { if done { host?.showReply(text) } else { host?.streamCaption(text) } }
+                else if done { host?.clearReply() }
             },
             sleep: { [weak self] in self?.server.broadcast(Packet(command: "sleep")) })
         self.subscription = subscription

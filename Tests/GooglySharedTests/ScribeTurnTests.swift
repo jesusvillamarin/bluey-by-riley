@@ -25,6 +25,7 @@ final class ScribeTurnTests: XCTestCase {
     func testParse() {
         XCTAssertEqual(ScribeRealtime.parse(#"{"message_type":"committed_transcript_with_timestamps","text":"hola","words":[]}"#), .committed("hola"))
         XCTAssertEqual(ScribeRealtime.parse(#"{"message_type":"auth_error","error":"bad"}"#), .failed(type: "auth_error"))
+        XCTAssertEqual(ScribeRealtime.parse(#"{"message_type":"insufficient_audio_activity","error":"silent"}"#), .failed(type: ScribeRealtime.silenceError))
         XCTAssertNil(ScribeRealtime.parse(#"{"message_type":"something_new"}"#))
     }
     func testParseSessionStartedPartialAndGarbage() {

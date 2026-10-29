@@ -29,6 +29,7 @@ final class SubscriptionVoice {
     private let mode: () -> VoiceMode
     private let state: () -> String?
     private let send: (Packet) -> Void
+    /// His bubble: `done` false streams `text`, true shows a finished line; nil text with `done` true takes the bubble down.
     private let caption: (_ text: String?, _ done: Bool) -> Void
     private let sleep: () -> Void
 
@@ -84,7 +85,11 @@ final class SubscriptionVoice {
         case "voiceCancel":
             let speech = packet.speech ?? 0
             for turn in turns where turn.speech == speech { turn.cancelled = true }
-            if let running, running.speech == speech { session.interrupt() }
+            if let running, running.speech == speech {
+                session.interrupt()
+                // Nothing more from this turn will reach the bubble, so take down what it left there.
+                caption(nil, true)
+            }
         default:
             return false
         }
@@ -153,7 +158,11 @@ final class SubscriptionVoice {
             guard !turn.cancelled else { return }
             send(Packet(command: "voiceDone", speech: turn.speech, text: reply))
             caption(reply, true)
-            if turn.sleepAfter { sleep() }
+            if turn.sleepAfter {
+                // He just said goodbye: an update that arrived meanwhile must not start a new turn as he drops off.
+                codexNotes = []
+                sleep()
+            }
         } catch {
             guard !turn.cancelled, error as? ClaudeVoiceSession.Failure != .interrupted else { return }
             let message = error.localizedDescription

@@ -44,6 +44,15 @@ public struct VoiceTurnLedger {
     /// Whether `speech` is the user's own turn rather than one the Mac started.
     public func isUserTurn(_ speech: Int?) -> Bool { (speech ?? 0) != 0 }
 
+    public enum Watchdog: Equatable { case rearm, stop, leave }
+
+    /// What an accepted packet for `speech` does to the wait-for-an-answer timer. Only the user's own turn drives it:
+    /// a turn the Mac started (speech 0) neither restarts it nor stops it.
+    public func watchdog(after speech: Int?) -> Watchdog {
+        guard isUserTurn(speech) else { return .leave }
+        return awaitingReply ? .rearm : .stop
+    }
+
     /// The Mac finished (or failed) the turn `speech`.
     public mutating func finished(_ speech: Int?) {
         if isUserTurn(speech), speech == turn { awaitingReply = false }

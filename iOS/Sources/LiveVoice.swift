@@ -755,11 +755,13 @@ extension LiveVoice {
             feedback = "Got your audio. Working out the task…"
             setState(.thinking)
         case .tooShort:
-            scribeFailed("I didn't catch that. Hold Bluey while you say the task.")
+            scribeFailed(Self.didntCatch)
         case .overflowed:
             scribeFailed("Voice took too long to connect. Hold Bluey and try again.")
         }
     }
+
+    private static let didntCatch = "I didn't catch that. Hold Bluey while you say the task."
 
     /// Ends the hold without asking the Mac anything.
     private func scribeFailed(_ message: String) {
@@ -777,7 +779,7 @@ extension LiveVoice {
             break
         case .failed(let type):
             listener = nil
-            scribeFailed("Voice transcription failed (\(type)). Try again.")
+            scribeFailed(type == ScribeRealtime.silenceError ? Self.didntCatch : "Voice transcription failed (\(type)). Try again.")
         case .final(let text):
             listener = nil
             scribeOpen = false
@@ -842,7 +844,8 @@ extension LiveVoice {
             chirped = false
             if canShow { setState(.listening) }
         case "voiceError":
-            feedback = packet.text ?? "Something went wrong."
+            // A Codex turn's failure is his to show on the Mac; it must not replace what the hold says.
+            if user { feedback = packet.text ?? "Something went wrong." }
             ledger.finished(packet.speech)
             chirped = false
             if canShow { setState(.listening) }
@@ -851,7 +854,11 @@ extension LiveVoice {
         default:
             break
         }
-        if ledger.awaitingReply { armWatchdog() } else { watchdog = nil }
+        switch ledger.watchdog(after: packet.speech) {
+        case .rearm: armWatchdog()
+        case .stop: watchdog = nil
+        case .leave: break
+        }
         writeDiagnostics()
     }
 

@@ -133,6 +133,13 @@ final class RealtimeHost {
         showReply(message)
     }
 
+    /// Takes the bubble down now and ends the speaking state (a reply cut off before it finished).
+    func clearReply() {
+        readingDone?.cancel()
+        setSpeaking(false)
+        showCaption(nil, for: 0)
+    }
+
     /// Shows a finished line in his bubble, long enough to read, then tidies away.
     func showReply(_ text: String) {
         if !text.isEmpty { showCaption(text, for: 0) }

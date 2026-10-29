@@ -47,6 +47,20 @@ final class VoiceTurnTests: XCTestCase {
         XCTAssertFalse(ledger.awaitingReply)
     }
 
+    func testOnlyTheUsersTurnTouchesTheWatchdog() {
+        var ledger = VoiceTurnLedger()
+        _ = ledger.begin()
+        ledger.asked()
+        XCTAssertEqual(ledger.watchdog(after: 1), .rearm)
+        XCTAssertEqual(ledger.watchdog(after: 0), .leave, "a Codex turn's packets don't count as the answer making progress")
+        XCTAssertEqual(ledger.watchdog(after: nil), .leave)
+        ledger.finished(0)
+        XCTAssertEqual(ledger.watchdog(after: 0), .leave)
+        ledger.finished(1)
+        XCTAssertEqual(ledger.watchdog(after: 1), .stop)
+        XCTAssertEqual(ledger.watchdog(after: 0), .leave, "and they don't cancel it either")
+    }
+
     func testAbandonDropsLatePackets() {
         var ledger = VoiceTurnLedger()
         _ = ledger.begin()

@@ -11,10 +11,12 @@ public enum ScribeServerMessage: Equatable {
 /// Wire format of the Scribe Realtime websocket (24 kHz PCM16 mono, manual commit).
 public enum ScribeRealtime {
     public static let sampleRate = 24000
+    /// What Scribe answers when the hold had no speech in it.
+    public static let silenceError = "insufficient_audio_activity"
     private static let errorTypes: Set<String> = [
         "error", "auth_error", "quota_exceeded", "rate_limited", "commit_throttled", "queue_overflow",
         "resource_exhausted", "input_error", "invalid_request", "chunk_size_exceeded",
-        "insufficient_audio_activity", "transcriber_error", "session_time_limit_exceeded", "unaccepted_terms"
+        silenceError, "transcriber_error", "session_time_limit_exceeded", "unaccepted_terms"
     ]
 
     public static func socketURL(token: String, keyterms: [String], languageCode: String?) -> URL {

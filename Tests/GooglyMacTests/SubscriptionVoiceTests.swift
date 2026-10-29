@@ -165,6 +165,51 @@ final class SubscriptionVoiceTests: XCTestCase {
         XCTAssertFalse(sent.contains { $0.command == "voiceError" })
     }
 
+    func testCancelClearsTheBubbleAndNothingElseFollows() async throws {
+        // Streams a delta, then would answer after 3 s unless interrupted.
+        let voice = try voice("""
+        pending=""
+        while IFS= read -r line; do
+          case "$line" in
+            *control_request*)
+              [ -n "$pending" ] && kill $pending 2>/dev/null
+              pending=""
+              echo '{"type":"result","subtype":"error_during_execution","is_error":true}' ;;
+            *)
+              echo '\(Self.delta)'
+              ( sleep 3 >/dev/null 2>&1; echo '\(Self.ok)' ) &
+              pending=$! ;;
+          esac
+        done
+        """)
+        ask(voice, "first", speech: 1)
+        await wait("bubble") { !captions.isEmpty }
+        XCTAssertEqual(captions.last?.text, "Hi")
+        XCTAssertEqual(captions.last?.done, false)
+        let before = captions.count
+        XCTAssertTrue(voice.handle(Packet(command: "voiceCancel", speech: 1)) { _ in })
+        XCTAssertEqual(captions.count, before + 1)
+        XCTAssertNil(captions.last?.text, "the cancelled reply's bubble is cleared")
+        XCTAssertEqual(captions.last?.done, true)
+        // Let the interrupted turn finish: it must add no caption.
+        try await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertEqual(captions.count, before + 1, "\(captions)")
+        XCTAssertNil(done(1))
+    }
+
+    func testCancelOfAWaitingTurnLeavesTheRunningBubbleAlone() async throws {
+        let voice = try voice("""
+        while IFS= read -r line; do echo '\(Self.delta)'; sleep 1; echo '\(Self.ok)'; done
+        """)
+        ask(voice, "first", speech: 1)
+        await wait("bubble") { !captions.isEmpty }
+        ask(voice, "second", speech: 2)
+        let before = captions.count
+        XCTAssertTrue(voice.handle(Packet(command: "voiceCancel", speech: 2)) { _ in })
+        XCTAssertEqual(captions.count, before, "turn 1 is still speaking")
+        await wait("voiceDone 1") { done(1) != nil }
+    }
+
     func testFailureSendsVoiceError() async throws {
         let voice = try voice(nil)
         ask(voice, "hi", speech: 5)
@@ -263,6 +308,19 @@ final class SubscriptionVoiceTests: XCTestCase {
         await wait("voiceDone") { done(2) != nil }
         XCTAssertEqual(log.filter { $0 == "SLEEP" }.count, 1)
         XCTAssertEqual(log.suffix(2), ["voiceDone", "SLEEP"])
+    }
+
+    func testCodexNoteQueuedDuringGoodbyeDoesNotStartATurnAfterSleep() async throws {
+        let voice = try voice("""
+        while IFS= read -r line; do echo '\(Self.delta)'; sleep 0.3; echo '\(Self.ok)'; done
+        """)
+        ask(voice, "bye", speech: 2)
+        await wait("turn streaming") { sent.contains { $0.command == "voiceDelta" } }
+        _ = voice.toolOutput(name: "go_to_sleep", output: "Going to sleep.", turn: voice.toolStarted())
+        XCTAssertTrue(voice.codexNote("Job finished"))
+        await wait("SLEEP") { log.contains("SLEEP") }
+        try await Task.sleep(nanoseconds: 800_000_000)
+        XCTAssertEqual(sent.filter { $0.command == "voiceDone" }.map(\.speech), [2], "\(log)")
     }
 
     func testCodexNoteInFastModeUsesPhone() throws {
