@@ -829,10 +829,10 @@ extension LiveVoice {
     }
 
     /// Gives up if the Mac goes quiet; every packet for the turn restarts it, so long tool turns survive.
-    private func armWatchdog() {
+    private func armWatchdog(after seconds: TimeInterval = VoiceTurnLedger.watchdogSeconds(after: nil)) {
         let id = UUID()
         watchdog = id
-        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
             guard let self, self.watchdog == id, self.ledger.awaitingReply else { return }
             let stale = self.ledger.turn
             self.ledger.abandon()
@@ -884,7 +884,7 @@ extension LiveVoice {
             break
         }
         switch ledger.watchdog(after: packet.speech) {
-        case .rearm: armWatchdog()
+        case .rearm: armWatchdog(after: VoiceTurnLedger.watchdogSeconds(after: packet.command))
         case .stop: watchdog = nil
         case .leave: break
         }

@@ -65,6 +65,13 @@ final class VoiceTurnTests: XCTestCase {
         XCTAssertEqual(ledger.watchdog(after: 0), .leave, "and they don't cancel it either")
     }
 
+    func testAToolStartBuysTheWholeToolCapBeforeTheWatchdogFires() {
+        // The Mac caps a tool at 180 s of silence from claude; the phone must wait longer than that after voiceTool.
+        XCTAssertGreaterThan(VoiceTurnLedger.watchdogSeconds(after: "voiceTool"), 180)
+        XCTAssertEqual(VoiceTurnLedger.watchdogSeconds(after: "voiceDelta"), 120)
+        XCTAssertEqual(VoiceTurnLedger.watchdogSeconds(after: nil), 120)
+    }
+
     func testAbandonDropsLatePackets() {
         var ledger = VoiceTurnLedger()
         _ = ledger.begin()

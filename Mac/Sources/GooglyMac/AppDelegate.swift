@@ -146,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             tools: { @Sendable in tools.value },
             call: { @Sendable name, arguments in
                 let turn = await subscription.toolStarted()
-                let result = await host.runQueuedTool(name, arguments: arguments)
+                let result = await host.runQueuedTool(name, arguments: arguments, mayRun: { @MainActor in subscription.toolMayRun(turn: turn) })
                 return (await subscription.toolOutput(name: name, output: result.text, turn: turn), result.image)
             }))
         do {

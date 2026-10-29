@@ -78,6 +78,12 @@ public struct VoiceTurnLedger {
         return awaitingReply ? .rearm : .stop
     }
 
+    /// How long to wait for the Mac's next packet after one with this `command`. Claude is silent while a tool runs
+    /// (the Mac caps that at 180 s), so a `voiceTool` buys the tool's whole cap plus a margin.
+    public static func watchdogSeconds(after command: String?) -> TimeInterval {
+        command == "voiceTool" ? 200 : 120
+    }
+
     /// The Mac finished (or failed) the turn `speech`.
     public mutating func finished(_ speech: Int?) {
         if isUserTurn(speech), speech == turn { awaitingReply = false }

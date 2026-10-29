@@ -8,7 +8,7 @@ enum Keychain {
         case elevenlabs
     }
 
-    private static var cache: [String: String]?
+    private static let cache = Locked<[String: String]?>(nil)
 
     private static var fileURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -19,10 +19,10 @@ enum Keychain {
     }
 
     private static func load() -> [String: String] {
-        if let cache { return cache }
+        if let cached = cache.value { return cached }
         let stored = (try? Data(contentsOf: fileURL))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] } ?? [:]
-        cache = stored
+        cache.value = stored
         return stored
     }
 
@@ -34,7 +34,7 @@ enum Keychain {
     static func set(_ key: Key, _ value: String?) {
         var all = load()
         all[key.rawValue] = value?.isEmpty == false ? value : nil
-        cache = all
+        cache.value = all
         guard let data = try? JSONSerialization.data(withJSONObject: all, options: [.prettyPrinted, .sortedKeys]) else { return }
         FileManager.default.createFile(atPath: fileURL.path, contents: data, attributes: [.posixPermissions: 0o600])
     }

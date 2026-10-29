@@ -90,6 +90,8 @@ final class ClaudeVoiceSession {
         let continuation: CheckedContinuation<String, Error>
         var interrupted = false
         var timer: Task<Void, Never>?
+        /// Tool calls (the MCP server's) running for this question: while any is, claude prints nothing.
+        var toolsInFlight = 0
         init(user: String, onEvent: @escaping (ClaudeEvent) -> Void, continuation: CheckedContinuation<String, Error>) {
             self.user = user
             self.onEvent = onEvent
@@ -103,6 +105,8 @@ final class ClaudeVoiceSession {
     private let arguments: () -> [String]
     private let workingDirectory: URL
     private let activityTimeout: TimeInterval
+    /// The most one stretch of tool calls may take, however silent claude is meanwhile.
+    private let toolTimeout: TimeInterval
 
     private var process: Process?
     private var output: Pipe?
@@ -119,11 +123,12 @@ final class ClaudeVoiceSession {
     private(set) var recentTurns: [(user: String, reply: String)] = []
 
     init(binary: @escaping () -> URL? = ClaudeBinary.locate, arguments: @escaping () -> [String], workingDirectory: URL,
-         activityTimeout: TimeInterval = 90) {
+         activityTimeout: TimeInterval = 90, toolTimeout: TimeInterval = 180) {
         self.binary = binary
         self.arguments = arguments
         self.workingDirectory = workingDirectory
         self.activityTimeout = activityTimeout
+        self.toolTimeout = toolTimeout
     }
 
     /// Starts the process ahead of the first question so it's ready; failures surface on `ask`.
@@ -147,7 +152,7 @@ final class ClaudeVoiceSession {
         let reply = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
             let turn = Turn(user: text, onEvent: onEvent, continuation: continuation)
             self.turn = turn
-            armTimer(turn)
+            armTimer(turn, after: activityTimeout)
             if !write(ClaudeStream.userLine(message)) {
                 discardProcess()
                 finish(turn, .failure(Failure.exited))
@@ -164,6 +169,21 @@ final class ClaudeVoiceSession {
         guard let turn, !turn.interrupted else { return }
         turn.interrupted = true
         _ = write(ClaudeStream.interruptLine(id: UUID().uuidString))
+    }
+
+    /// A tool call of the question in flight began. Claude is silent until it ends, so the activity timer is
+    /// replaced by the tool's own, longer cap.
+    func toolStarted() {
+        guard let turn else { return }
+        turn.toolsInFlight += 1
+        if turn.toolsInFlight == 1 { armTimer(turn, after: toolTimeout) }
+    }
+
+    /// A tool call ended; once none is left, claude is expected to speak again within the activity timeout.
+    func toolFinished() {
+        guard let turn, turn.toolsInFlight > 0 else { return }
+        turn.toolsInFlight -= 1
+        if turn.toolsInFlight == 0 { armTimer(turn, after: activityTimeout) }
     }
 
     /// Kills the process and forgets the conversation.
@@ -201,10 +221,7 @@ final class ClaudeVoiceSession {
         process.executableURL = url
         process.arguments = arguments()
         process.currentDirectoryURL = workingDirectory
-        var env = ProcessInfo.processInfo.environment
-        env["CLAUDECODE"] = nil
-        env["PATH"] = url.deletingLastPathComponent().path + ":" + (env["PATH"] ?? "/usr/bin:/bin")
-        process.environment = env
+        process.environment = Self.environment(base: ProcessInfo.processInfo.environment, binary: url)
         let stdin = Pipe(), stdout = Pipe()
         process.standardInput = stdin
         process.standardOutput = stdout
@@ -234,6 +251,17 @@ final class ClaudeVoiceSession {
         output = stdout
         input = stdin.fileHandleForWriting
         buffer = Data()
+    }
+
+    /// What claude is launched with. Variables that would make it bill an API account, or run as a nested session,
+    /// are removed: Subscription voice must use the subscription.
+    static func environment(base: [String: String], binary: URL) -> [String: String] {
+        var env = base
+        for name in ["CLAUDECODE", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"] {
+            env[name] = nil
+        }
+        env["PATH"] = binary.deletingLastPathComponent().path + ":" + (env["PATH"] ?? "/usr/bin:/bin")
+        return env
     }
 
     /// Forgets the current process without reporting anything; its handlers become no-ops.
@@ -272,7 +300,8 @@ final class ClaudeVoiceSession {
 
     private func handle(_ line: String) {
         guard let turn else { return }
-        armTimer(turn)
+        // While a tool runs, its own cap is the clock; output from claude doesn't extend it.
+        if turn.toolsInFlight == 0 { armTimer(turn, after: activityTimeout) }
         let event = ClaudeStream.parse(line)
         turn.onEvent(event)
         guard case .result(let text, let isError) = event else { return }
@@ -287,9 +316,8 @@ final class ClaudeVoiceSession {
 
     // MARK: Ending a turn
 
-    private func armTimer(_ turn: Turn) {
+    private func armTimer(_ turn: Turn, after timeout: TimeInterval) {
         turn.timer?.cancel()
-        let timeout = activityTimeout
         turn.timer = Task { @MainActor [weak self, weak turn] in
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             guard !Task.isCancelled, let self, let turn, self.turn === turn else { return }

@@ -99,17 +99,19 @@ final class RealtimeHost {
     }
 
     /// Runs a tool after the ones already asked for (shared by the phone's Realtime session and the MCP server).
-    func runQueuedTool(_ name: String, arguments: String) async -> (text: String, image: String?) {
+    /// `mayRun` is asked when the tool's turn comes; false drops it (its question was cancelled while it waited).
+    func runQueuedTool(_ name: String, arguments: String, mayRun: @escaping @MainActor () -> Bool = { true }) async -> (text: String, image: String?) {
         await withCheckedContinuation { continuation in
-            queueTool(name, arguments: arguments) { continuation.resume(returning: $0) }
+            queueTool(name, arguments: arguments, mayRun: mayRun) { continuation.resume(returning: $0) }
         }
     }
 
     /// Chains the tool onto `toolChain` right away, so tools run in the order they were asked for.
-    private func queueTool(_ name: String, arguments: String, then done: @escaping ((text: String, image: String?)) -> Void) {
+    private func queueTool(_ name: String, arguments: String, mayRun: @escaping @MainActor () -> Bool = { true }, then done: @escaping ((text: String, image: String?)) -> Void) {
         let previous = toolChain
         toolChain = Task { @MainActor in
             await previous?.value
+            guard mayRun() else { return done(("That request was cancelled.", nil)) }
             done(await self.runTool(name, arguments: arguments))
         }
     }
@@ -767,7 +769,7 @@ final class RealtimeHost {
         use focus_start with that task and an optional duration (default 30 minutes), without confirmation.
         Related learning and research count as work. If a focus session already exists, a new task needs the
         user to end the current one first. Pause, resume and end only when asked using the focus tools.
-        One short witty British sentence. Never scold. Focus monitoring itself
+        One short witty sentence. Never scold. Focus monitoring itself
         never clicks, closes apps, blocks sites or delegates work. Only use other tools on an explicit request.
         Do not claim a session started if its tool reports a permission, connection or API error.
         """ + "\n\n" + toolGuide

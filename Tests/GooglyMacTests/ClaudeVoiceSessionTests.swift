@@ -172,6 +172,61 @@ final class ClaudeVoiceSessionTests: XCTestCase {
         await assertAskThrows(session, .timedOut)
     }
 
+    func testSilenceWhileAToolIsInFlightDoesNotTimeOut() async throws {
+        // After its first delta claude goes silent for 1 s (a tool running), far past the 0.3 s activity timeout.
+        let session = try session("""
+        while IFS= read -r line; do
+          echo '\(Self.delta)'; sleep 1; echo '\(Self.ok)'
+        done
+        """, timeout: 0.3)
+        var sawDelta = false
+        let ask = Task { @MainActor in try await session.ask("x") { if $0 == .textDelta("Hi") { sawDelta = true } } }
+        while !sawDelta { try await Task.sleep(nanoseconds: 10_000_000) }
+        session.toolStarted()
+        let reply = try await ask.value
+        session.toolFinished()
+        XCTAssertEqual(reply, "Hi")
+    }
+
+    func testToolInFlightIsCappedByTheToolTimeout() async throws {
+        let url = try fake("while IFS= read -r line; do echo '\(Self.delta)'; sleep 5; done")
+        let session = ClaudeVoiceSession(binary: { url }, arguments: { [] }, workingDirectory: directory, activityTimeout: 0.2, toolTimeout: 0.6)
+        addTeardownBlock { await session.stop() }
+        var sawDelta = false
+        let ask = Task { @MainActor in try await session.ask("x") { if $0 == .textDelta("Hi") { sawDelta = true } } }
+        while !sawDelta { try await Task.sleep(nanoseconds: 10_000_000) }
+        session.toolStarted()
+        let started = Date()
+        do { _ = try await ask.value; XCTFail("expected a timeout") }
+        catch { XCTAssertEqual(error as? ClaudeVoiceSession.Failure, .timedOut) }
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 0.45, "the activity timeout (0.2 s) must not apply while the tool runs")
+    }
+
+    func testActivityTimeoutResumesWhenTheToolEnds() async throws {
+        let url = try fake("while IFS= read -r line; do echo '\(Self.delta)'; sleep 5; done")
+        let session = ClaudeVoiceSession(binary: { url }, arguments: { [] }, workingDirectory: directory, activityTimeout: 0.3, toolTimeout: 30)
+        addTeardownBlock { await session.stop() }
+        var sawDelta = false
+        let ask = Task { @MainActor in try await session.ask("x") { if $0 == .textDelta("Hi") { sawDelta = true } } }
+        while !sawDelta { try await Task.sleep(nanoseconds: 10_000_000) }
+        session.toolStarted()
+        try await Task.sleep(nanoseconds: 600_000_000)
+        session.toolFinished()
+        do { _ = try await ask.value; XCTFail("expected a timeout") }
+        catch { XCTAssertEqual(error as? ClaudeVoiceSession.Failure, .timedOut) }
+    }
+
+    func testEnvironmentDropsAnythingThatWouldBillAnAPIAccount() {
+        let base = ["PATH": "/usr/bin", "HOME": "/Users/x", "CLAUDECODE": "1", "ANTHROPIC_API_KEY": "sk-ant", "ANTHROPIC_AUTH_TOKEN": "t",
+                    "CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_USE_VERTEX": "1"]
+        let env = ClaudeVoiceSession.environment(base: base, binary: URL(fileURLWithPath: "/opt/claude/bin/claude"))
+        for name in ["CLAUDECODE", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"] {
+            XCTAssertNil(env[name], name)
+        }
+        XCTAssertEqual(env["HOME"], "/Users/x")
+        XCTAssertEqual(env["PATH"], "/opt/claude/bin:/usr/bin")
+    }
+
     func testErrorResultFails() async throws {
         let session = try session("""
         while IFS= read -r line; do
