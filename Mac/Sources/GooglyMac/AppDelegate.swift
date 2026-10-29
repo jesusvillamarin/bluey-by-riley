@@ -136,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if let text { if done { host?.showReply(text) } else { host?.streamCaption(text) } }
                 else if done { host?.clearReply() }
             },
-            sleep: { [weak self] in self?.server.broadcast(Packet(command: "sleep")) },
+            sleep: { [weak self] in self?.server.broadcast(VoicePlayback.sleepPacket(afterSpeech: true)) },
             speakAloud: { Settings.shared.speakAloud },
             speak: { voice.speak($0) })
         self.subscription = subscription

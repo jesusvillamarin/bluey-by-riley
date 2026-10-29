@@ -196,4 +196,23 @@ final class VoicePlaybackTests: XCTestCase {
         ledger.finished(1)
         XCTAssertTrue(ledger.mayPlay(0, holding: false))
     }
+
+    // MARK: Which sleep waits for the goodbye
+
+    func testOnlyTheGoodbyeSleepWaitsForTheSpeech() {
+        let goodbye = VoicePlayback.sleepPacket(afterSpeech: true)
+        let plain = VoicePlayback.sleepPacket(afterSpeech: false)
+        XCTAssertEqual(goodbye.command, "sleep")
+        XCTAssertEqual(plain.command, "sleep")
+        XCTAssertTrue(VoicePlayback.sleepWaitsForSpeech(goodbye.text))
+        XCTAssertFalse(VoicePlayback.sleepWaitsForSpeech(plain.text), "menu Sleep and a restart stop at once")
+        XCTAssertFalse(VoicePlayback.sleepWaitsForSpeech(nil), "an older Mac's sleep is plain")
+    }
+
+    func testAChunkThatCouldNotBeScheduledCanBeUncounted() {
+        var playback = VoicePlayback()
+        let chunk = playback.chunk(base64: pcm(), speech: 1)!
+        XCTAssertFalse(playback.played(generation: chunk.generation), "the speech is still open")
+        XCTAssertTrue(playback.end(), "nothing is left pending, so the end finishes it")
+    }
 }

@@ -13,6 +13,17 @@ public struct VoicePlayback {
     /// The longest `sleep` waits for a goodbye that is still playing.
     public static let sleepCap: TimeInterval = 8
 
+    private static let afterSpeechMarker = "afterSpeech"
+
+    /// The `sleep` command. Only the goodbye (`go_to_sleep`) asks the phone to let the audio finish first; the menu's
+    /// Sleep and a restart (Speak Aloud or voice mode changed) are plain and stop him at once.
+    public static func sleepPacket(afterSpeech: Bool) -> Packet {
+        Packet(command: "sleep", text: afterSpeech ? afterSpeechMarker : nil)
+    }
+
+    /// Whether a received `sleep` should wait for the speech still playing. An older Mac's (no marker) never does.
+    public static func sleepWaitsForSpeech(_ text: String?) -> Bool { text == afterSpeechMarker }
+
     /// One chunk ready to schedule. Pass `generation` back to `played` so a chunk from before a `reset()` is ignored.
     public struct Chunk {
         public let samples: [Float]

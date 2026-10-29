@@ -129,6 +129,8 @@ final class LiveVoice: NSObject, ObservableObject {
     }
 
     func wake() {
+        // A goodbye is still playing out before its sleep: do the sleep now, then wake (a restart sends sleep, then wake).
+        if sleepWhenQuiet != nil { sleep() }
         guard state == .asleep else { return }
         wantAwake = true
         setState(.waking)
@@ -906,10 +908,14 @@ extension LiveVoice {
     /// Plays a `voiceAudio` chunk: PCM16 24 kHz mono, scheduled behind what's already queued.
     private func playChunk(_ packet: Packet) {
         guard engine.isRunning, ledger.mayPlay(packet.speech, holding: holding || scribeOpen),
-              let chunk = playback.chunk(base64: packet.audio, speech: packet.speech),
-              let buffer = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(chunk.samples.count)),
-              let out = buffer.floatChannelData?[0] else { return }
+              let chunk = playback.chunk(base64: packet.audio, speech: packet.speech) else { return }
         audioGrace = nil
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(chunk.samples.count)),
+              let out = buffer.floatChannelData?[0] else {
+            // Never scheduled, so it must not stay counted as waiting to play.
+            if playback.played(generation: chunk.generation) { audioFinished() }
+            return
+        }
         buffer.frameLength = AVAudioFrameCount(chunk.samples.count)
         chunk.samples.withUnsafeBufferPointer { out.update(from: $0.baseAddress!, count: chunk.samples.count) }
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
