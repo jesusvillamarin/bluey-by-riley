@@ -12,6 +12,11 @@ MainActor.assumeIsolated {
         NSApplication.shared.run()
         return
     }
+    if CommandLine.arguments.contains("--voice-claude-test") {
+        Task { @MainActor in exit(await ClaudeVoiceProbe.run()) }
+        NSApplication.shared.run()
+        return
+    }
     let app = NSApplication.shared
     let delegate = AppDelegate()
     app.delegate = delegate
