@@ -32,6 +32,28 @@ public struct VoiceTurnLedger {
         return cancel
     }
 
+    /// A new hold, with `audioFrom` the turn whose speech the Mac may still be sending (nil if none) and `macBusy` set
+    /// when a turn the Mac started is mid-reply. Returns the turns the Mac should be told to cancel: the user's last
+    /// turn if it is unanswered or still speaking, and speech 0 if a Mac turn is running.
+    public mutating func beginHold(audioFrom: Int? = nil, macBusy: Bool = false) -> [Int] {
+        let previous = turn
+        var cancels: [Int] = []
+        if let unanswered = begin() {
+            cancels.append(unanswered)
+        } else if let audioFrom, audioFrom == previous, audioFrom != 0 {
+            cancels.append(audioFrom)
+        }
+        if audioFrom == 0 || (macBusy && cancels.isEmpty) { cancels.append(0) }
+        return cancels
+    }
+
+    /// Whether audio for `speech` may play now. The user's own accepted turn always may, even after its text is done;
+    /// a turn the Mac started plays only when no hold is in progress and no answer is awaited.
+    public func mayPlay(_ speech: Int?, holding: Bool) -> Bool {
+        guard accepts(speech) else { return false }
+        return isUserTurn(speech) || (!holding && !awaitingReply)
+    }
+
     /// The transcript went to the Mac.
     public mutating func asked() { awaitingReply = true }
 

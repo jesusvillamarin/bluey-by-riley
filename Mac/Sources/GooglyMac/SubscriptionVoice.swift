@@ -167,9 +167,8 @@ final class SubscriptionVoice {
                 return true
             }
             // A new question while the last reply is only still being spoken: stop that speech at once, so this answer
-            // doesn't wait behind it (the phone no longer cancels a turn whose reply is done). A reply still being
-            // written is not cut off, and neither is anything a Codex note started. If the old turn had a goodbye
-            // pending, he was spoken to again, so he stays awake.
+            // doesn't wait behind it. That includes a Codex note's turn (speech 0). A reply still being written is not
+            // cut off. If the old turn had a goodbye pending, he was spoken to again, so he stays awake.
             if let running, running.replyDone { running.cancel() }
             enqueue((state().map { "Right now (state information only): \($0)\n\n" } ?? "") + text, speech: speech)
         case "voiceCancel":

@@ -5,7 +5,8 @@ import Foundation
 /// time; only speech captured while holding is sent. Prior held turns remain conversation context.
 /// In Subscription mode (the Mac says so when he wakes) held audio goes to ElevenLabs Scribe instead, the final
 /// transcript goes to the Mac, and the reply streams back as `voice*` packets.
-/// He never talks out loud: replies are text (speech bubbles on the Mac) with a little cartoon chirp here.
+/// In Fast mode he never talks out loud: replies are text (speech bubbles on the Mac) with a little cartoon chirp
+/// here. In Subscription mode the Mac streams his voice (ElevenLabs) and it plays on the phone.
 /// Tools (look at the screen, point) run on the Mac.
 final class LiveVoice: NSObject, ObservableObject {
     enum State: Equatable { case asleep, waking, listening, asking, thinking, speaking }
@@ -37,7 +38,12 @@ final class LiveVoice: NSObject, ObservableObject {
     private var releasePending = false
     private var watchdog: UUID?
     private var wakeRequest = UUID()
-    private var chirped = false
+    /// The Mac's voice audio for the turn being spoken.
+    private var playback = VoicePlayback()
+    /// A reply ended without sound: set while waiting to see whether the Mac starts speaking.
+    private var audioGrace: UUID?
+    /// A `sleep` command arrived while a goodbye was still playing: sleep once it has, or at the cap.
+    private var sleepWhenQuiet: UUID?
 
     static let model = GooglyModels.realtime
 
@@ -175,6 +181,9 @@ final class LiveVoice: NSObject, ObservableObject {
         releasePending = false
         watchdog = nil
         ledger.abandon()
+        playback.reset()
+        audioGrace = nil
+        sleepWhenQuiet = nil
         wakeRequest = UUID()
         mode = .fast
         keyterms = []
@@ -198,6 +207,18 @@ final class LiveVoice: NSObject, ObservableObject {
         level = 0
         codexNotes = []
         setState(.asleep)
+    }
+
+    /// The Mac says go to sleep. If a goodbye is still playing out he finishes it first (at most `sleepCap`); the
+    /// Mac only sends this after the last audio chunk, so there is nothing more to wait for than what is queued.
+    func sleepAfterSpeech() {
+        guard mode == .subscription, playback.isDraining else { sleep(); return }
+        let token = UUID()
+        sleepWhenQuiet = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + VoicePlayback.sleepCap) { [weak self] in
+            guard let self, self.sleepWhenQuiet == token else { return }
+            self.sleep()
+        }
     }
 
     /// Says a quick hi (for checking the chirp volume).
@@ -701,14 +722,12 @@ extension LiveVoice {
     fileprivate func startScribeTurn() {
         listener?.cancel()
         listener = nil
-        let macSpeaking = state == .speaking
-        if let unanswered = ledger.begin() {
-            sendToMac?(Packet(command: "voiceCancel", speech: unanswered))
-        } else if macSpeaking {
-            sendToMac?(Packet(command: "voiceCancel", speech: 0))  // a turn the Mac started
-        }
+        // The Mac stops generating for the turn he was on (its reply or its speech), whatever phase it's in; a turn that
+        // was cut off gets no end from the Mac, so what's queued here is dropped now rather than waited for.
+        let cancels = ledger.beginHold(audioFrom: playback.macMaySend ? playback.speech : nil, macBusy: state == .speaking)
+        for speech in cancels { sendToMac?(Packet(command: "voiceCancel", speech: speech)) }
+        silencePlayback()
         watchdog = nil
-        chirped = false
         releasePending = false
         scribeOpen = true
         feedback = "Listening… let go when you're done."
@@ -810,7 +829,7 @@ extension LiveVoice {
             let stale = self.ledger.turn
             self.ledger.abandon()
             self.watchdog = nil
-            self.chirped = false
+            self.silencePlayback()
             self.sendToMac?(Packet(command: "voiceCancel", speech: stale))
             self.feedback = "Bluey took too long to answer. Hold and try again."
             self.setState(.listening)
@@ -830,25 +849,23 @@ extension LiveVoice {
             let text = packet.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard canShow, !text.isEmpty else { break }
             setState(.speaking)
-            chirpOnce(for: text)
         case "voiceTool":
             toolNames.append(packet.tool ?? ""); toolNames = Array(toolNames.suffix(8))
+        case "voiceAudio":
+            playChunk(packet)
+        case "voiceAudioEnd":
+            if ledger.mayPlay(packet.speech, holding: scribeOpen), playback.end() { audioFinished() }
         case "voiceDone":
             let text = packet.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if user { timings.mark(.done) }
             ledger.finished(packet.speech)
-            if !text.isEmpty {
-                onReply?(text)
-                if canShow { chirpOnce(for: text) }
-            }
-            chirped = false
-            if canShow { setState(.listening) }
+            if !text.isEmpty { onReply?(text) }
+            if canShow { replyEnded(packet.speech, text: text) }
         case "voiceError":
             // A Codex turn's failure is his to show on the Mac; it must not replace what the hold says.
             if user { feedback = packet.text ?? "Something went wrong." }
             ledger.finished(packet.speech)
-            chirped = false
-            if canShow { setState(.listening) }
+            if canShow { replyEnded(packet.speech, text: nil) }
         case "voiceReport":
             if let report = packet.text, !report.isEmpty { onReport?(report) }
         default:
@@ -859,12 +876,70 @@ extension LiveVoice {
         case .stop: watchdog = nil
         case .leave: break
         }
-        writeDiagnostics()
+        if packet.command != "voiceAudio" { writeDiagnostics() }
     }
 
-    private func chirpOnce(for text: String) {
-        guard !chirped else { return }
-        chirped = true
-        chirp(syllables: min(max(text.split(separator: " ").count, 3), 5))
+    // MARK: Playback
+
+    /// Drops everything queued or playing and takes the player back to ready; a pending sleep is cancelled.
+    private func silencePlayback() {
+        let wasPlaying = playback.isActive
+        playback.reset()
+        audioGrace = nil
+        sleepWhenQuiet = nil
+        guard wasPlaying else { return }
+        player.stop()
+        if engine.isRunning { player.play() }
+        level = 0
+    }
+
+    /// Plays a `voiceAudio` chunk: PCM16 24 kHz mono, scheduled behind what's already queued.
+    private func playChunk(_ packet: Packet) {
+        guard engine.isRunning, ledger.mayPlay(packet.speech, holding: scribeOpen),
+              let chunk = playback.chunk(base64: packet.audio, speech: packet.speech),
+              let buffer = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(chunk.samples.count)),
+              let out = buffer.floatChannelData?[0] else { return }
+        audioGrace = nil
+        buffer.frameLength = AVAudioFrameCount(chunk.samples.count)
+        chunk.samples.withUnsafeBufferPointer { out.update(from: $0.baseAddress!, count: chunk.samples.count) }
+        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self, self.playback.played(generation: chunk.generation) else { return }
+                self.level = 0
+                self.audioFinished()
+            }
+        }
+        if state != .speaking { setState(.speaking) }
+    }
+
+    /// The Mac's speech for the turn has all played: sleep if a goodbye was waiting, otherwise back to listening.
+    private func audioFinished() {
+        if sleepWhenQuiet != nil { sleep(); return }
+        guard state == .speaking, !holding, !scribeOpen, !ledger.awaitingReply else { return }
+        setState(.listening)
+    }
+
+    /// `voiceDone`, or `voiceError` (`text` nil). Speech that's playing or coming brings him back to listening when it
+    /// ends. A reply with words but no sound yet gets a moment for the Mac to start speaking; if none comes it was
+    /// text only (Speak Aloud off, or speech failed), so he chirps like Fast mode and goes back to listening.
+    private func replyEnded(_ speech: Int?, text: String?) {
+        let words = text ?? ""
+        switch playback.replyEnded(speech: speech, mayHaveAudio: !words.isEmpty) {
+        case .finished:
+            setState(.listening)
+        case .playing:
+            setState(.speaking)
+        case .waitForAudio:
+            setState(.speaking)
+            let token = UUID()
+            audioGrace = token
+            DispatchQueue.main.asyncAfter(deadline: .now() + VoicePlayback.audioGrace) { [weak self] in
+                guard let self, self.audioGrace == token else { return }
+                self.audioGrace = nil
+                guard self.playback.graceElapsed() else { return }
+                self.chirp(syllables: min(max(words.split(separator: " ").count, 3), 5))
+                if self.state == .speaking { self.setState(.listening) }
+            }
+        }
     }
 }

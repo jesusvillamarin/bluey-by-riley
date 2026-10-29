@@ -184,7 +184,7 @@ struct RootView: View {
         link.onCommand = { [live, focus] command, text in
             switch command {
             case "wake": live.wake()
-            case "sleep": live.sleep()
+            case "sleep": live.sleepAfterSpeech()
             case "codexNote": live.codexNote(text ?? "")
             case "codexChirp": live.chirpAlone()
             case "focusChirp":

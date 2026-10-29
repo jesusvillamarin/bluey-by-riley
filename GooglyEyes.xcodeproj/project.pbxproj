@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		09261119287579514FC4B057 /* VoicePlayback.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D97AE461A0300327E709E2 /* VoicePlayback.swift */; };
 		0E02B38E4A5A909A93BA31C5 /* OFL-IBMPlex.txt in Resources */ = {isa = PBXBuildFile; fileRef = 1249C703A2D40793CA70D00E /* OFL-IBMPlex.txt */; };
 		0F5614BE9A55A8498E40F5F1 /* IBMPlexMono-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 1C8AB3F441CA03CDA07FAE72 /* IBMPlexMono-Medium.ttf */; };
 		162BD56C1F6191020071D2A2 /* BlobShape.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35F3C44C342D6E869E6E3B4E /* BlobShape.swift */; };
@@ -44,6 +45,7 @@
 		1249C703A2D40793CA70D00E /* OFL-IBMPlex.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "OFL-IBMPlex.txt"; sourceTree = "<group>"; };
 		1510156B478E99D7C4446DCA /* BlueyAppView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlueyAppView.swift; sourceTree = "<group>"; };
 		1C8AB3F441CA03CDA07FAE72 /* IBMPlexMono-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "IBMPlexMono-Medium.ttf"; sourceTree = "<group>"; };
+		28D97AE461A0300327E709E2 /* VoicePlayback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePlayback.swift; sourceTree = "<group>"; };
 		2CD953582717D49F21FCD734 /* LiveVoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveVoice.swift; sourceTree = "<group>"; };
 		35F3C44C342D6E869E6E3B4E /* BlobShape.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlobShape.swift; sourceTree = "<group>"; };
 		4A31DC33ABF7869BDE4E0F6C /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
@@ -134,6 +136,7 @@
 				EA0DB68613683DA6EEDD49DD /* ScribeRealtime.swift */,
 				6C5BC31DC1FF4C0765EA0688 /* SecurePairing.swift */,
 				ECCD0B1B3F772EEB972FCDFE /* VoiceMode.swift */,
+				28D97AE461A0300327E709E2 /* VoicePlayback.swift */,
 				8FD1DEC45D1251DD2F88BC05 /* VoiceTurn.swift */,
 				9523CAD3450502FE203C1BBD /* VoiceTurnBuffer.swift */,
 				2F574059BA9C302B222352AA /* Fonts */,
@@ -238,6 +241,7 @@
 				6FBD9F2B49D3FD5A78CC4EF1 /* SessionStore.swift in Sources */,
 				FF7676A8F229F874417F4451 /* SoundButton.swift in Sources */,
 				BA3F94D89F09246F45830119 /* VoiceMode.swift in Sources */,
+				09261119287579514FC4B057 /* VoicePlayback.swift in Sources */,
 				16D18EB908E3C4D6A2D52678 /* VoiceTurn.swift in Sources */,
 				89CA80F59236155E52CDA9D9 /* VoiceTurnBuffer.swift in Sources */,
 			);

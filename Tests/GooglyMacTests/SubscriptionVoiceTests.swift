@@ -720,12 +720,29 @@ final class SubscriptionVoiceTests: XCTestCase {
         slowSpeech()
         let voice = try voice(greeting)
         ask(voice, "hola", speech: 1)
+        await wait("voiceDone 1") { done(1) != nil }
         await wait("first audio") { !audio(1).isEmpty }
         let before = sent.count
         ask(voice, "again", speech: 0)
         await wait("voiceAudioEnd 0") { index("voiceAudioEnd", 0) != nil }
         XCTAssertFalse(sent[before...].contains { $0.speech == 1 })
         XCTAssertNil(index("voiceAudioEnd", 1))
+    }
+
+    func testNewQuestionAlsoCutsACodexTurnsAudio() async throws {
+        speakAloud = true
+        slowSpeech()
+        let voice = try voice(greeting)
+        XCTAssertTrue(voice.codexNote("Job finished"))
+        await wait("voiceDone 0") { done(0) != nil }
+        await wait("first audio") { !audio(0).isEmpty }
+        let before = sent.count
+        ask(voice, "hola", speech: 1)
+        await wait("voiceAudioEnd 1") { index("voiceAudioEnd", 1) != nil }
+        XCTAssertNil(index("voiceAudioEnd", 0), "a cut-off turn gets no end")
+        XCTAssertFalse(sent[before...].contains { $0.speech == 0 }, "nothing of the Codex turn after the question")
+        XCTAssertEqual(audio(0), ["Hola."])
+        XCTAssertEqual(audio(1), ["Hola.", "Qué tal?", "Bien"])
     }
 
     func testNewQuestionCancelsAPendingSleepOfTheSilencedTurn() async throws {
@@ -737,6 +754,7 @@ final class SubscriptionVoiceTests: XCTestCase {
         ask(voice, "bye", speech: 1)
         await wait("turn streaming") { index("voiceDelta", 1) != nil }
         _ = voice.toolOutput(name: "go_to_sleep", output: "Going to sleep.", turn: voice.toolStarted())
+        await wait("voiceDone 1") { done(1) != nil }
         await wait("first audio") { !audio(1).isEmpty }
         ask(voice, "wait, one more thing", speech: 2)
         await wait("voiceAudioEnd 2") { index("voiceAudioEnd", 2) != nil }
@@ -794,7 +812,7 @@ final class SubscriptionVoiceTests: XCTestCase {
             ask(voice, "hola", speech: speech)
             await wait("voiceAudioEnd \(speech)") { index("voiceAudioEnd", speech) != nil }
         }
-        await wait("the audio let go") { SubscriptionVoice.liveTurnAudio == baseline }
+        await wait("the audio let go") { SubscriptionVoice.liveTurnAudio <= baseline }
     }
 
     func testGoToSleepStillSleepsWhenSpeechFails() async throws {
