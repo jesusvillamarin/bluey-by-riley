@@ -21,15 +21,23 @@ final class MeetingNotesScribeTests: XCTestCase {
             space(1.6, 1.8, "speaker_0"), word("Ready?", 1.8, 2.4),
         ]
         let segments = MeetingNotes.segments(fromScribeWords: words)
-        XCTAssertEqual(segments.map(\.speaker), ["Speaker 1", "Speaker 2", "Speaker 1"])
+        XCTAssertEqual(segments.map(\.speaker), ["A", "B", "A"])
         XCTAssertEqual(segments.map(\.text), ["Hello there.", "Hi!", "Ready?"])
         XCTAssertEqual(segments.map(\.start), [0, 1.2, 1.8])
         XCTAssertEqual(segments.map(\.end), [1.0, 1.6, 2.4])
     }
 
-    func testSpeakersNumberedByFirstAppearance() {
+    func testSpeakersLetteredByFirstAppearance() {
         let words = [word("a", 0, 1, "speaker_3"), word("b", 1, 2, "speaker_0")]
-        XCTAssertEqual(MeetingNotes.segments(fromScribeWords: words).map(\.speaker), ["Speaker 1", "Speaker 2"])
+        XCTAssertEqual(MeetingNotes.segments(fromScribeWords: words).map(\.speaker), ["A", "B"])
+    }
+
+    func testLabelsPastZ() {
+        let words = (0..<27).map { word("w", Double($0) * 10, Double($0) * 10 + 1, "speaker_\($0)") }
+        let speakers = MeetingNotes.segments(fromScribeWords: words).map(\.speaker)
+        XCTAssertEqual(speakers.first, "A")
+        XCTAssertEqual(speakers[25], "Z")
+        XCTAssertEqual(speakers[26], "27")
     }
 
     func testShortGapSameSpeakerMerges() {
@@ -44,7 +52,7 @@ final class MeetingNotesScribeTests: XCTestCase {
         let words = [word("First", 0, 1), word("second", 4, 5)]
         let segments = MeetingNotes.segments(fromScribeWords: words)
         XCTAssertEqual(segments.map(\.text), ["First", "second"])
-        XCTAssertEqual(segments.map(\.speaker), ["Speaker 1", "Speaker 1"])
+        XCTAssertEqual(segments.map(\.speaker), ["A", "A"])
     }
 
     func testAudioEventsAndSpacingNeverAppearInText() {
@@ -60,7 +68,7 @@ final class MeetingNotesScribeTests: XCTestCase {
     func testMissingSpeakerIsOneSpeaker() {
         let words = [word("No", 0, 0.5, nil), word("labels", 0.6, 1.0, nil)]
         let segments = MeetingNotes.segments(fromScribeWords: words)
-        XCTAssertEqual(segments.map(\.speaker), ["Speaker 1"])
+        XCTAssertEqual(segments.map(\.speaker), ["A"])
         XCTAssertEqual(segments.map(\.text), ["No labels"])
     }
 

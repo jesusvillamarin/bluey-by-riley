@@ -50,7 +50,7 @@ enum MeetingNotes {
         - `session.json`: the same data, structured.
         - `audio/`: the raw recording, as five-minute AAC chunks.
 
-        Speakers are told apart only when an ElevenLabs key is set (numbered per five-minute chunk, so the same number can mean different people in different chunks); otherwise each chunk is one block of text. Lines marked "(live)" are a rough live transcript for audio that hasn't been fully \
+        Speakers are told apart only when an ElevenLabs key is set (lettered per five-minute chunk, so the same letter can mean different people in different chunks); otherwise each chunk is one block of text. Lines marked "(live)" are a rough live transcript for audio that hasn't been fully \
         transcribed yet.
         """
         try? text.write(to: url, atomically: true, encoding: .utf8)
@@ -123,7 +123,11 @@ enum MeetingNotes {
                          audio: audio, boundary: boundary)
     }
 
-    /// One line per speaker turn, from Scribe's word list. Speakers are "Speaker 1", "Speaker 2"… in order of first appearance;
+    private static func label(_ index: Int) -> String {
+        index < 26 ? String(UnicodeScalar(UInt8(65 + index))) : String(index + 1)
+    }
+
+    /// One line per speaker turn, from Scribe's word list. Speakers are labelled "A", "B"… in order of first appearance (then "27", "28"… after Z), like the old diarized labels;
     /// a turn ends when the speaker changes or after a pause of 2.5 s or more.
     static func segments(fromScribeWords words: [[String: Any]]) -> [Segment] {
         var turns: [Segment] = []
@@ -144,7 +148,7 @@ enum MeetingNotes {
             guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
             let id = word["speaker_id"] as? String ?? ""
             if !order.contains(id) { order.append(id) }
-            let speaker = "Speaker \(order.firstIndex(of: id)! + 1)"
+            let speaker = label(order.firstIndex(of: id)!)
             let start = (word["start"] as? Double) ?? 0
             let end = (word["end"] as? Double) ?? start
             if var last = turns.last, last.speaker == speaker, start - last.end < 2.5 {
