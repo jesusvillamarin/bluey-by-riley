@@ -374,7 +374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settings.voiceMode == .subscription { restartIfAwake() }
     }
 
-    /// Lists the premade voices that speak English and Spanish and saves the one picked.
+    /// Lists the premade voices that speak English and Spanish (every premade voice, if none is listed as both) and saves the one picked.
     @objc private func pickVoice() {
         Task { @MainActor in
             let voices: [ElevenLabs.Voice]
@@ -383,12 +383,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             // A key whose voices aren't verified for both languages still gets a list to choose from.
-            let choices = ElevenLabs.bilingual(voices).isEmpty ? voices : ElevenLabs.bilingual(voices)
+            let bilingual = ElevenLabs.bilingual(voices)
+            let choices = bilingual.isEmpty ? voices : bilingual
             guard !choices.isEmpty else { host.showReply("Couldn't load voices: ElevenLabs listed none."); return }
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "His Voice"
-            alert.informativeText = "Premade ElevenLabs voices that speak English and Spanish."
+            alert.informativeText = bilingual.isEmpty
+                ? "None of the premade ElevenLabs voices is listed as speaking both English and Spanish. These are all the premade voices it lists."
+                : "Premade ElevenLabs voices that speak English and Spanish."
             let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 26), pullsDown: false)
             popup.addItems(withTitles: choices.map(\.name))
             let current = settings.voiceID.isEmpty ? ElevenLabs.defaultVoice(from: voices)?.id : settings.voiceID

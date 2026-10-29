@@ -676,4 +676,152 @@ final class SubscriptionVoiceTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertEqual(sent.count, before)
     }
+
+    // MARK: Barge-in and wind-down
+
+    /// Each sentence takes half a second to arrive, so a three-sentence reply keeps speaking for well over a second.
+    private func slowSpeech() {
+        speakStream = { sentence in
+            AsyncThrowingStream { continuation in
+                let wait = Task {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    guard !Task.isCancelled else { return }
+                    continuation.yield(Data(sentence.utf8))
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in wait.cancel() }
+            }
+        }
+    }
+
+    private func index(_ command: String, _ speech: Int) -> Int? {
+        sent.firstIndex { $0.command == command && $0.speech == speech }
+    }
+
+    func testNewQuestionSilencesTheAudioOfAFinishedReplyAndStartsRightAway() async throws {
+        speakAloud = true
+        slowSpeech()
+        let voice = try voice(greeting)
+        ask(voice, "hola", speech: 1)
+        await wait("voiceDone 1") { done(1) != nil }
+        await wait("first audio") { !audio(1).isEmpty }
+        let before = sent.count
+        ask(voice, "again", speech: 2)
+        await wait("the new turn's first delta") { index("voiceDelta", 2) != nil }
+        XCTAssertNil(index("voiceAudioEnd", 1), "the old turn didn't finish its speech first: \(sent.map { ($0.command ?? "", $0.speech ?? -1) })")
+        await wait("voiceAudioEnd 2") { index("voiceAudioEnd", 2) != nil }
+        XCTAssertFalse(sent[before...].contains { $0.speech == 1 }, "nothing of the old turn after the ask")
+        XCTAssertEqual(audio(1), ["Hola."])
+        XCTAssertEqual(audio(2), ["Hola.", "Qué tal?", "Bien"])
+    }
+
+    func testNewQuestionAsSpeechZeroAlsoSilencesAFinishedReply() async throws {
+        speakAloud = true
+        slowSpeech()
+        let voice = try voice(greeting)
+        ask(voice, "hola", speech: 1)
+        await wait("first audio") { !audio(1).isEmpty }
+        let before = sent.count
+        ask(voice, "again", speech: 0)
+        await wait("voiceAudioEnd 0") { index("voiceAudioEnd", 0) != nil }
+        XCTAssertFalse(sent[before...].contains { $0.speech == 1 })
+        XCTAssertNil(index("voiceAudioEnd", 1))
+    }
+
+    func testNewQuestionCancelsAPendingSleepOfTheSilencedTurn() async throws {
+        speakAloud = true
+        slowSpeech()
+        let voice = try voice("""
+        while IFS= read -r line; do echo '\(Self.text("Bye. See you"))'; echo '\(Self.result("Bye. See you"))'; done
+        """)
+        ask(voice, "bye", speech: 1)
+        await wait("turn streaming") { index("voiceDelta", 1) != nil }
+        _ = voice.toolOutput(name: "go_to_sleep", output: "Going to sleep.", turn: voice.toolStarted())
+        await wait("first audio") { !audio(1).isEmpty }
+        ask(voice, "wait, one more thing", speech: 2)
+        await wait("voiceAudioEnd 2") { index("voiceAudioEnd", 2) != nil }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertFalse(log.contains("SLEEP"), "he was spoken to again, so he stays awake: \(log)")
+    }
+
+    func testCodexNoteWaitsForTheRunningTurnsAudioToEnd() async throws {
+        speakAloud = true
+        slowSpeech()
+        let voice = try voice(greeting)
+        ask(voice, "hola", speech: 1)
+        await wait("voiceDone 1") { done(1) != nil }
+        XCTAssertTrue(voice.codexNote("Job finished"))
+        await wait("voiceDone 0") { done(0) != nil }
+        let end = try XCTUnwrap(index("voiceAudioEnd", 1), "the first turn's audio ran to its end")
+        XCTAssertLessThan(end, try XCTUnwrap(index("voiceDone", 0)))
+        XCTAssertEqual(audio(1), ["Hola.", "Qué tal?", "Bien"])
+    }
+
+    func testClaudeFailingAfterSomeAudioEndsTheAudioBeforeTheError() async throws {
+        speakAloud = true
+        slowSpeech()
+        let voice = try voice("""
+        while IFS= read -r line; do
+          echo '\(Self.text("Hola. Qué"))'
+          sleep 0.8
+          echo '{"type":"result","subtype":"error_during_execution","is_error":true}'
+        done
+        """)
+        ask(voice, "hola", speech: 1)
+        await wait("voiceError") { index("voiceError", 1) != nil }
+        let end = try XCTUnwrap(index("voiceAudioEnd", 1), "\(sent.map { ($0.command ?? "", $0.speech ?? -1) })")
+        XCTAssertLessThan(end, try XCTUnwrap(index("voiceError", 1)))
+        try await Task.sleep(nanoseconds: 700_000_000)
+        XCTAssertEqual(sent.filter { $0.command == "voiceAudioEnd" }.count, 1)
+        XCTAssertEqual(sent.last?.command, "voiceError", "no audio after the end")
+    }
+
+    func testClaudeFailingBeforeAnyAudioSendsNoAudioEnd() async throws {
+        speakAloud = true
+        let voice = try voice("""
+        while IFS= read -r line; do echo '{"type":"result","subtype":"error_during_execution","is_error":true}'; done
+        """)
+        ask(voice, "hola", speech: 1)
+        await wait("voiceError") { index("voiceError", 1) != nil }
+        XCTAssertNil(index("voiceAudioEnd", 1))
+    }
+
+    func testFinishedTurnsLetGoOfTheirAudio() async throws {
+        speakAloud = true
+        let voice = try voice(greeting)
+        let baseline = SubscriptionVoice.liveTurnAudio
+        for speech in 1...3 {
+            ask(voice, "hola", speech: speech)
+            await wait("voiceAudioEnd \(speech)") { index("voiceAudioEnd", speech) != nil }
+        }
+        await wait("the audio let go") { SubscriptionVoice.liveTurnAudio == baseline }
+    }
+
+    func testGoToSleepStillSleepsWhenSpeechFails() async throws {
+        speakAloud = true
+        struct Boom: Error {}
+        speakStream = { _ in AsyncThrowingStream { $0.finish(throwing: Boom()) } }
+        let voice = try voice("""
+        while IFS= read -r line; do echo '\(Self.text("Bye."))'; sleep 0.2; echo '\(Self.result("Bye."))'; done
+        """)
+        ask(voice, "bye", speech: 2)
+        await wait("turn streaming") { index("voiceDelta", 2) != nil }
+        _ = voice.toolOutput(name: "go_to_sleep", output: "Going to sleep.", turn: voice.toolStarted())
+        await wait("SLEEP") { log.contains("SLEEP") }
+        XCTAssertEqual(log.filter { $0 == "SLEEP" }.count, 1)
+        XCTAssertFalse(sent.contains { $0.command == "voiceAudio" || $0.command == "voiceAudioEnd" })
+    }
+
+    func testGoToSleepStillSleepsWithSpeakAloudOff() async throws {
+        speakAloud = false
+        let voice = try voice("""
+        while IFS= read -r line; do echo '\(Self.text("Bye."))'; sleep 0.2; echo '\(Self.result("Bye."))'; done
+        """)
+        ask(voice, "bye", speech: 2)
+        await wait("turn streaming") { index("voiceDelta", 2) != nil }
+        _ = voice.toolOutput(name: "go_to_sleep", output: "Going to sleep.", turn: voice.toolStarted())
+        await wait("SLEEP") { log.contains("SLEEP") }
+        XCTAssertEqual(Array(log.suffix(2)), ["voiceDone", "SLEEP"])
+        XCTAssertTrue(speech.sentences.isEmpty)
+    }
 }

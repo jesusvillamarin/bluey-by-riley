@@ -1,6 +1,14 @@
 import Foundation
 import GooglyShared
 
+private final class LiveCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var live = 0
+    var count: Int { lock.lock(); defer { lock.unlock() }; return live }
+    func add(_ change: Int) { lock.lock(); live += change; lock.unlock() }
+}
+private let liveAudio = LiveCount()
+
 /// The Mac side of a Subscription-mode turn: the phone sends what was said, a warm `claude -p` answers here,
 /// and the reply streams back to the phone as packets and into his bubble. With Speak Aloud on, each finished
 /// sentence is turned into speech right away and its audio follows to the phone, in order, while he keeps writing.
@@ -17,6 +25,8 @@ final class SubscriptionVoice {
         /// Set by `voiceCancel` or sleep: nothing more from this turn reaches the phone.
         private(set) var cancelled = false
         var sleepAfter = false
+        /// The reply went out as `voiceDone`; the turn may still be producing its audio.
+        var replyDone = false
         var text = ""
         /// Cuts `text` into sentences for `audio`. Starts over when a tool call restarts the text.
         var splitter = SentenceSplitter()
@@ -35,6 +45,9 @@ final class SubscriptionVoice {
         }
     }
 
+    /// How many turns' audio workers exist right now; a finished turn must let go of its own.
+    static var liveTurnAudio: Int { liveAudio.count }
+
     /// Speaks one turn's sentences strictly in order, handing each audio chunk to `emit`.
     @MainActor private final class TurnAudio {
         private let speak: (String) -> AsyncThrowingStream<Data, Error>
@@ -49,11 +62,14 @@ final class SubscriptionVoice {
         init(speak: @escaping (String) -> AsyncThrowingStream<Data, Error>, emit: @escaping (Data) -> Void) {
             self.speak = speak
             self.emit = emit
+            liveAudio.add(1)
             var continuation: AsyncStream<String>.Continuation!
             let queue = AsyncStream<String> { continuation = $0 }
             sentences = continuation
             worker = Task { @MainActor in await self.work(queue) }
         }
+
+        deinit { liveAudio.add(-1) }
 
         func say(_ sentence: String) { sentences.yield(sentence) }
 
@@ -150,6 +166,11 @@ final class SubscriptionVoice {
                 send(Packet(command: "voiceDone", speech: speech, text: ""))
                 return true
             }
+            // A new question while the last reply is only still being spoken: stop that speech at once, so this answer
+            // doesn't wait behind it (the phone no longer cancels a turn whose reply is done). A reply still being
+            // written is not cut off, and neither is anything a Codex note started. If the old turn had a goodbye
+            // pending, he was spoken to again, so he stays awake.
+            if let running, running.replyDone { running.cancel() }
             enqueue((state().map { "Right now (state information only): \($0)\n\n" } ?? "") + text, speech: speech)
         case "voiceCancel":
             let speech = packet.speech ?? 0
@@ -221,8 +242,8 @@ final class SubscriptionVoice {
     private func run(_ turn: Turn) async {
         guard !turn.cancelled else { return }
         running = turn
-        // Whatever way the turn ends, nothing of its speech outlives it.
-        defer { running = nil; turn.audio?.stop() }
+        // Whatever way the turn ends, nothing of its speech outlives it, and the turn lets go of its audio.
+        defer { running = nil; turn.audio?.stop(); turn.audio = nil }
         if speakAloud() {
             turn.audio = TurnAudio(speak: speak, emit: { [weak self, turn] data in
                 guard let self, !turn.cancelled else { return }
@@ -233,6 +254,7 @@ final class SubscriptionVoice {
             let reply = try await session.ask(turn.message) { [weak self, turn] event in self?.received(event, for: turn) }
             guard !turn.cancelled else { return }
             send(Packet(command: "voiceDone", speech: turn.speech, text: reply))
+            turn.replyDone = true
             caption(reply, true)
             if let audio = turn.audio {
                 // `reply` is the authority. Normally it equals what was streamed, so only the unfinished rest is new;
@@ -252,6 +274,12 @@ final class SubscriptionVoice {
         } catch {
             guard !turn.cancelled, error as? ClaudeVoiceSession.Failure != .interrupted else { return }
             let message = error.localizedDescription
+            // The turn failed after some of it was already spoken: the speech in flight is cut here, and the phone is told
+            // the audio is over (before the error) so it can leave speaking.
+            if let audio = turn.audio {
+                audio.stop()
+                if audio.chunksSent > 0 { send(Packet(command: "voiceAudioEnd", speech: turn.speech)) }
+            }
             send(Packet(command: "voiceError", speech: turn.speech, text: message))
             caption(message, true)
         }
