@@ -116,6 +116,18 @@ final class SubscriptionVoiceTests: XCTestCase {
         XCTAssertNil(decoded[0]["keyterms"])
         XCTAssertEqual(decoded[1]["mode"] as? String, "subscription")
         XCTAssertEqual(decoded[1]["keyterms"] as? [String], ["Bluey", "Codex", "Claude"])
+        XCTAssertEqual(decoded[1]["speak"] as? Bool, false)
+        XCTAssertNil(decoded[0]["speak"])
+    }
+
+    func testVoiceStartReportsSpeakAloud() throws {
+        let voice = try voice(nil)
+        var replies: [Packet] = []
+        speakAloud = true
+        XCTAssertTrue(voice.handle(Packet(command: "voiceStart", callID: "a")) { replies.append($0) })
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(XCTUnwrap(replies.first?.text).utf8)) as? [String: Any])
+        XCTAssertEqual(decoded["speak"] as? Bool, true)
+        XCTAssertTrue(VoiceStartReply(text: replies.first?.text).speaks)
     }
 
     func testUnknownCommandsPassThrough() throws {

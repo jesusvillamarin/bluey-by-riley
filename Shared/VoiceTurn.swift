@@ -4,15 +4,18 @@ import Foundation
 public struct VoiceStartReply: Equatable {
     public var mode: VoiceMode
     public var keyterms: [String]
+    /// The Mac will speak his replies (Speak Aloud is on). Fixed for the session: changing it restarts the session.
+    public var speaks: Bool
 
     /// Anything that isn't a clear Subscription answer (no reply, an older Mac, bad JSON) means Fast.
     public init(text: String?) {
         guard let text, let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
               json["mode"] as? String == VoiceMode.subscription.rawValue else {
-            mode = .fast; keyterms = []; return
+            mode = .fast; keyterms = []; speaks = false; return
         }
         mode = .subscription
         keyterms = (json["keyterms"] as? [String]) ?? []
+        speaks = json["speak"] as? Bool ?? false
     }
 }
 

@@ -143,6 +143,7 @@ final class SubscriptionVoice {
             var body: [String: Any] = ["mode": mode().rawValue]
             if mode() == .subscription {
                 body["keyterms"] = Self.keyterms
+                body["speak"] = speakAloud()
                 session.warmUp()
                 let tokens = tokens
                 Task { await tokens.prefetch() }

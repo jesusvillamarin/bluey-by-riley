@@ -7,8 +7,9 @@ import Foundation
 /// Audio can start before `voiceDone` and keep coming after it, and a turn that was cut off never gets an end, so a
 /// hold always calls `reset()` instead of waiting for one.
 public struct VoicePlayback {
-    /// A reply that ends with no audio yet gets this long (seconds) to start speaking before it counts as text only.
-    public static let audioGrace: TimeInterval = 1.5
+    /// With Speak Aloud on, a reply that ends with no audio yet gets this long (seconds) to start speaking before it
+    /// counts as text only (speech failed). Generous: a cold connection can make the first sound slow.
+    public static let audioGrace: TimeInterval = 4
     /// The longest `sleep` waits for a goodbye that is still playing.
     public static let sleepCap: TimeInterval = 8
 
