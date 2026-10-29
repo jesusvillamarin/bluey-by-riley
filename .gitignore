@@ -8,3 +8,4 @@ xcuserdata/
 Secrets.xcconfig
 *.env
 .env*
+.superpowers/
