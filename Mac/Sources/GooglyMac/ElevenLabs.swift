@@ -34,7 +34,7 @@ actor ElevenLabsTokens {
     private var prefetching = false
 
     init(maxAge: TimeInterval = 13 * 60,
-         now: @escaping @Sendable () -> Date = Date.init,
+         now: @escaping @Sendable () -> Date = { Date() },
          mint: @escaping @Sendable () async throws -> String = { try await ElevenLabs.mintToken("realtime_scribe") }) {
         self.maxAge = maxAge
         self.now = now

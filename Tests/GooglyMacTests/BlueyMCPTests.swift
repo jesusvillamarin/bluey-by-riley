@@ -41,28 +41,38 @@ final class BlueyMCPTests: XCTestCase {
 
     func testRejectsWrongToken() async {
         let body = rpc(["jsonrpc": "2.0", "id": 1, "method": "tools/list"])
-        let wrong = await handler().respond(method: "POST", authorization: "Bearer nope", body: body)
+        let wrong = await handler().respond(method: "POST", authorization: "Bearer nope", origin: nil, body: body)
         XCTAssertEqual(wrong.status, 401)
-        let missing = await handler().respond(method: "POST", authorization: nil, body: body)
+        let missing = await handler().respond(method: "POST", authorization: nil, origin: nil, body: body)
         XCTAssertEqual(missing.status, 401)
-        let bare = await handler().respond(method: "POST", authorization: Self.token, body: body)
+        let bare = await handler().respond(method: "POST", authorization: Self.token, origin: nil, body: body)
         XCTAssertEqual(bare.status, 401)
     }
 
+    func testRejectsOriginHeader() async {
+        // Browsers always send Origin; a valid bearer doesn't help them.
+        let body = rpc(["jsonrpc": "2.0", "id": 1, "method": "tools/list"])
+        let browser = await handler().respond(method: "POST", authorization: Self.bearer, origin: "http://evil.example", body: body)
+        XCTAssertEqual(browser.status, 403)
+        XCTAssertNil(browser.body)
+        let wrongToken = await handler().respond(method: "POST", authorization: "Bearer nope", origin: "null", body: body)
+        XCTAssertEqual(wrongToken.status, 403)
+    }
+
     func testGetNotAllowed() async {
-        let response = await handler().respond(method: "GET", authorization: Self.bearer, body: Data())
+        let response = await handler().respond(method: "GET", authorization: Self.bearer, origin: nil, body: Data())
         XCTAssertEqual(response.status, 405)
     }
 
     func testNotificationAccepted() async {
-        let response = await handler().respond(method: "POST", authorization: Self.bearer,
+        let response = await handler().respond(method: "POST", authorization: Self.bearer, origin: nil,
                                                body: Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8))
         XCTAssertEqual(response.status, 202)
         XCTAssertNil(response.body)
     }
 
     func testInitializeEchoesVersion() async throws {
-        let response = await handler().respond(method: "POST", authorization: Self.bearer, body: rpc(
+        let response = await handler().respond(method: "POST", authorization: Self.bearer, origin: nil, body: rpc(
             ["jsonrpc": "2.0", "id": "a1", "method": "initialize",
              "params": ["protocolVersion": "2099-01-01", "capabilities": [:], "clientInfo": ["name": "claude"]]]))
         XCTAssertEqual(response.status, 200)
@@ -76,7 +86,7 @@ final class BlueyMCPTests: XCTestCase {
     }
 
     func testToolsList() async throws {
-        let response = await handler().respond(method: "POST", authorization: Self.bearer,
+        let response = await handler().respond(method: "POST", authorization: Self.bearer, origin: nil,
                                                body: rpc(["jsonrpc": "2.0", "id": 2, "method": "tools/list"]))
         let reply = try json(response.body)
         XCTAssertEqual(reply["id"] as? Int, 2)
@@ -87,7 +97,7 @@ final class BlueyMCPTests: XCTestCase {
 
     func testToolsCallWithImage() async throws {
         let calls = Calls()
-        let response = await handler(calls: calls, reply: ("Safari", "AAAA")).respond(method: "POST", authorization: Self.bearer, body: rpc(
+        let response = await handler(calls: calls, reply: ("Safari", "AAAA")).respond(method: "POST", authorization: Self.bearer, origin: nil, body: rpc(
             ["jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": ["name": "look_at_screen", "arguments": ["x": 5]]]))
         XCTAssertEqual(response.status, 200)
         let reply = try json(response.body)
@@ -108,7 +118,7 @@ final class BlueyMCPTests: XCTestCase {
 
     func testToolsCallWithoutArguments() async throws {
         let calls = Calls()
-        let response = await handler(calls: calls).respond(method: "POST", authorization: Self.bearer, body: rpc(
+        let response = await handler(calls: calls).respond(method: "POST", authorization: Self.bearer, origin: nil, body: rpc(
             ["jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": ["name": "focus_status"]]))
         let content = try XCTUnwrap((try json(response.body)["result"] as? [String: Any])?["content"] as? [[String: Any]])
         XCTAssertEqual(content.count, 1)
@@ -116,14 +126,14 @@ final class BlueyMCPTests: XCTestCase {
     }
 
     func testUnknownMethod() async throws {
-        let response = await handler().respond(method: "POST", authorization: Self.bearer,
+        let response = await handler().respond(method: "POST", authorization: Self.bearer, origin: nil,
                                                body: rpc(["jsonrpc": "2.0", "id": 3, "method": "server/discover"]))
         let error = try XCTUnwrap(try json(response.body)["error"] as? [String: Any])
         XCTAssertEqual(error["code"] as? Int, -32601)
     }
 
     func testMalformedJSON() async throws {
-        let response = await handler().respond(method: "POST", authorization: Self.bearer, body: Data("{nope".utf8))
+        let response = await handler().respond(method: "POST", authorization: Self.bearer, origin: nil, body: Data("{nope".utf8))
         let reply = try json(response.body)
         XCTAssertEqual((reply["error"] as? [String: Any])?["code"] as? Int, -32700)
         XCTAssertTrue(reply["id"] is NSNull)
@@ -163,6 +173,8 @@ final class BlueyMCPTests: XCTestCase {
         // Wrong token is answered from the headers alone, without waiting for the promised body.
         let unauthorized = await raw("POST /mcp HTTP/1.1\r\nauthorization: Bearer nope\r\nContent-Length: 500\r\n\r\n", port: port)
         XCTAssertTrue(unauthorized.hasPrefix("HTTP/1.1 401"), unauthorized)
+        let browser = await raw("OPTIONS /mcp HTTP/1.1\r\nOrigin: http://evil.example\r\nAuthorization: \(Self.bearer)\r\n\r\n", port: port)
+        XCTAssertTrue(browser.hasPrefix("HTTP/1.1 403 Forbidden"), browser)
         let noLength = await raw("POST /mcp HTTP/1.1\r\nAUTHORIZATION: \(Self.bearer)\r\n\r\n", port: port)
         XCTAssertTrue(noLength.hasPrefix("HTTP/1.1 411"), noLength)
         let tooBig = await raw("POST /mcp HTTP/1.1\r\nAuthorization: \(Self.bearer)\r\nContent-Length: 2000000\r\n\r\n", port: port)

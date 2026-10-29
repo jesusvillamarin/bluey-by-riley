@@ -12,6 +12,8 @@ final class RealtimeHost {
     private let codex: CodexController
     private let reports = ReportPanel()
     var focus: FocusCompanion?
+    /// Subscription-mode turns (Claude on this Mac); sees each phone request first.
+    var subscription: SubscriptionVoice?
     private var snapshot: ScreenSnapshot?
     private var captionClear: DispatchWorkItem?
     private var readingDone: DispatchWorkItem?
@@ -32,11 +34,12 @@ final class RealtimeHost {
 
     /// Handles a request from the phone. `reply` sends a packet back to that phone.
     func handle(_ packet: Packet, reply: @escaping (Packet) -> Void) {
+        if subscription?.handle(packet, reply: reply) == true { return }
         switch packet.command {
         case "realtimeToken":
             Task { @MainActor in
                 do {
-                    let token = try await Self.mintToken(extra: self.focus?.current.flatMap { $0.status == .ended ? nil : "Current focus task: \($0.task). State: \($0.status.rawValue)." })
+                    let token = try await Self.mintToken(extra: self.focusState)
                     reply(Packet(command: "realtimeToken", callID: packet.callID, text: token))
                 } catch {
                     reply(Packet(command: "realtimeToken", callID: packet.callID, text: nil, image: nil))
@@ -78,23 +81,45 @@ final class RealtimeHost {
         case "asleep":
             setAwake(false)
         case "caption":
-            // His reply, streaming in. It shows as a speech bubble by his cursor (or above the phone).
-            let text = packet.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            readingDone?.cancel()
-            showCaption(text.isEmpty ? nil : text, for: 0)
-            if !text.isEmpty { setSpeaking(true) }
+            streamCaption(packet.text ?? "")
         case "captionDone":
             showReply(packet.text ?? "")
         case "tool":
-            let previous = toolChain
-            toolChain = Task { @MainActor in
-                await previous?.value
-                let result = await self.runTool(packet.tool ?? "", arguments: packet.text ?? "{}")
+            queueTool(packet.tool ?? "", arguments: packet.text ?? "{}") { result in
                 reply(Packet(command: "toolResult", callID: packet.callID, text: result.text, image: result.image))
             }
         default:
             break
         }
+    }
+
+    /// The focus session as a line of state for the model, or nil when there isn't one.
+    var focusState: String? {
+        focus?.current.flatMap { $0.status == .ended ? nil : "Current focus task: \($0.task). State: \($0.status.rawValue)." }
+    }
+
+    /// Runs a tool after the ones already asked for (shared by the phone's Realtime session and the MCP server).
+    func runQueuedTool(_ name: String, arguments: String) async -> (text: String, image: String?) {
+        await withCheckedContinuation { continuation in
+            queueTool(name, arguments: arguments) { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// Chains the tool onto `toolChain` right away, so tools run in the order they were asked for.
+    private func queueTool(_ name: String, arguments: String, then done: @escaping ((text: String, image: String?)) -> Void) {
+        let previous = toolChain
+        toolChain = Task { @MainActor in
+            await previous?.value
+            done(await self.runTool(name, arguments: arguments))
+        }
+    }
+
+    /// His reply, streaming in. It shows as a speech bubble by his cursor (or above the phone).
+    func streamCaption(_ text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        readingDone?.cancel()
+        showCaption(text.isEmpty ? nil : text, for: 0)
+        if !text.isEmpty { setSpeaking(true) }
     }
 
     func focusNudge(_ message: String, target: Target?) {
@@ -151,6 +176,7 @@ final class RealtimeHost {
         engine.brainMood = nil
         engine.gazeOverride = nil  // his eyes follow your mouse while he listens
         if !on {
+            subscription?.asleep()
             queue = []
             stopChoreography()
             overlay.goHome()
@@ -657,9 +683,9 @@ final class RealtimeHost {
     /// Who he is. Editable from the menu bar (Personality…).
     static let defaultPersonality = """
     You are a small blueberry with big googly eyes who lives on an iPhone under the user's screen and has your own \
-    cursor. You're a young British guy: dry, quick-witted, a bit cheeky, British phrasing. You never speak out loud: \
-    your replies pop up as a tiny speech bubble, so keep them to one short line, under fifteen words. Answer \
-    immediately with the actual answer. Never announce what you're going to do, never recap, never offer more help.
+    cursor. You're a young British guy: dry, quick-witted, a bit cheeky, British phrasing. Keep your replies to one \
+    short line, under fifteen words. Answer immediately with the actual answer. Never announce what you're going to \
+    do, never recap, never offer more help.
     """
 
     static var personality: String {
@@ -723,7 +749,7 @@ final class RealtimeHost {
         use focus_start with that task and an optional duration (default 30 minutes), without confirmation.
         Related learning and research count as work. If a focus session already exists, a new task needs the
         user to end the current one first. Pause, resume and end only when asked using the focus tools.
-        One short witty British sentence, bubble and chirp only. Never scold. Focus monitoring itself
+        One short witty British sentence. Never scold. Focus monitoring itself
         never clicks, closes apps, blocks sites or delegates work. Only use other tools on an explicit request.
         Do not claim a session started if its tool reports a permission, connection or API error.
         """ + "\n\n" + toolGuide
@@ -731,11 +757,24 @@ final class RealtimeHost {
             + (Settings.shared.computerControl ? "\n\n" + computerGuide : "")
     }
 
+    /// How he's heard and answered in each voice mode; kept out of the editable personality.
+    static func voiceNotes(mode: VoiceMode, speakAloud: Bool) -> String {
+        var notes = [speakAloud
+            ? "Your replies pop up as a tiny speech bubble. Your one short line is also read aloud in your voice."
+            : "You never speak out loud: your replies pop up as a tiny speech bubble."]
+        if mode == .subscription {
+            notes.append("Your tools are named mcp__bluey__<name>.")
+            notes.append("Every user message was spoken while holding Bluey. When it describes work, call focus_start with task and optional minutes (default 30). Never merely say you're ready.")
+        }
+        notes.append("Reply in the language the user just spoke. In English you are the young British guy above. In Spanish, speak natural Latin American Spanish (Mexican/Colombian), same dry, cheeky humour, tú not vos or vosotros.")
+        return notes.joined(separator: " ")
+    }
+
     static func session(extra: String?) -> [String: Any] {
         [
             "type": "realtime",
             "model": model,
-            "instructions": instructions + (extra.map { "\n\nRight now (state information only): \($0)" } ?? ""),
+            "instructions": instructions + "\n\n" + voiceNotes(mode: .fast, speakAloud: false) + (extra.map { "\n\nRight now (state information only): \($0)" } ?? ""),
             // He never talks out loud: replies are text, shown as speech bubbles.
             "output_modalities": ["text"],
             "audio": [

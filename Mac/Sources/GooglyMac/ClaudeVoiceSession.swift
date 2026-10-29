@@ -53,7 +53,7 @@ enum ClaudeBinary {
 }
 
 /// A value read and written from any thread.
-private final class Locked<Value>: @unchecked Sendable {
+final class Locked<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: Value
     init(_ value: Value) { stored = value }

@@ -16,7 +16,8 @@ enum ClaudeVoiceProbe {
 
         let tools = RealtimeHost.tools.filter { $0["name"] as? String == "look_at_screen" }
         let toolCalls = Counter()
-        let handler = MCPHandler(token: MCPHandler.randomToken(),
+        let token = MCPHandler.randomToken()
+        let handler = MCPHandler(token: token,
                                  tools: { stamp("MCP tools/list"); return tools },
                                  call: { name, arguments in
                                      toolCalls.increment()
@@ -29,9 +30,11 @@ enum ClaudeVoiceProbe {
         stamp("MCP server on 127.0.0.1:\(port)")
 
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("bluey-voice-probe-\(UUID().uuidString)")
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let config = server.configJSON(port: port)
-        let session = ClaudeVoiceSession(arguments: { ClaudeStream.arguments(model: "haiku", systemPrompt: prompt, mcpConfig: config) },
+        let config: URL
+        do { config = try SubscriptionVoice.writeMCPConfig(server.configJSON(port: port), in: directory) } catch {
+            print("Could not write the MCP config: \(error)"); server.stop(); return 1
+        }
+        let session = ClaudeVoiceSession(arguments: { ClaudeStream.arguments(model: "haiku", systemPrompt: prompt, mcpConfig: config.path) },
                                          workingDirectory: directory)
         defer {
             session.stop()
@@ -39,6 +42,10 @@ enum ClaudeVoiceProbe {
             try? FileManager.default.removeItem(at: directory)
         }
         session.warmUp()
+        // The bearer token must stay in the 0600 file, never in anyone's argv.
+        let claudeLines = commandLines().filter { $0.contains(config.path) }
+        let argvOK = !claudeLines.isEmpty && !claudeLines.contains { $0.contains("Bearer") || $0.contains(token) }
+        stamp("ps: claude argv has the config path and no Bearer: \(argvOK)")
         stamp("spawned; asking: \(question)")
 
         var sawEvent = false, sawText = false, toolUses: [String] = []
@@ -59,11 +66,25 @@ enum ClaudeVoiceProbe {
         }
         stamp("reply: \(reply)")
         let lower = reply.lowercased()
-        let passed = toolUses.contains("look_at_screen") && toolCalls.value > 0
+        let passed = argvOK && toolUses.contains("look_at_screen") && toolCalls.value > 0
             && (lower.contains("rectangle") || lower.contains("square")) && lower.contains("circle")
             && (reply.contains("1,284") || reply.contains("1284"))
-        print(passed ? "PASS" : "FAIL (toolUses=\(toolUses), tool calls served=\(toolCalls.value))")
+        print(passed ? "PASS" : "FAIL (argvOK=\(argvOK), toolUses=\(toolUses), tool calls served=\(toolCalls.value))")
         return passed ? 0 : 1
+    }
+
+    /// Every process's full command line, from `ps -axww -o args=`.
+    private static func commandLines() -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axww", "-o", "args="]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return [] }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).components(separatedBy: "\n")
     }
 
     /// White page with a blue rectangle, an orange circle and a line of text.

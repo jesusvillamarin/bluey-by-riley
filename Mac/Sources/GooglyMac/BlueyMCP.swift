@@ -37,7 +37,9 @@ struct MCPHandler {
         return difference == 0
     }
 
-    func respond(method: String, authorization: String?, body: Data) async -> (status: Int, body: Data?) {
+    /// Any `Origin` header means a browser page is calling: refused before the token is even checked.
+    func respond(method: String, authorization: String?, origin: String?, body: Data) async -> (status: Int, body: Data?) {
+        guard origin == nil else { return (403, nil) }
         guard authorizes(authorization) else { return (401, nil) }
         guard method == "POST" else { return (405, nil) }
         guard let request = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
@@ -172,11 +174,11 @@ final class BlueyMCPServer: @unchecked Sendable {
             case .respond(let status):
                 deadline.cancel()
                 self.reply(connection, status: status, body: nil)
-            case .request(let method, let authorization, let body):
+            case .request(let method, let authorization, let origin, let body):
                 deadline.cancel()
                 let handler = self.handler
                 Task {
-                    let response = await handler.respond(method: method, authorization: authorization, body: body)
+                    let response = await handler.respond(method: method, authorization: authorization, origin: origin, body: body)
                     self.queue.async { self.reply(connection, status: response.status, body: response.body) }
                 }
             }
@@ -186,10 +188,10 @@ final class BlueyMCPServer: @unchecked Sendable {
     private enum Parsed {
         case incomplete, tooLarge
         case respond(Int)
-        case request(method: String, authorization: String?, body: Data)
+        case request(method: String, authorization: String?, origin: String?, body: Data)
     }
 
-    /// Reads one request; rejects a bad token before waiting for the body.
+    /// Reads one request; rejects browsers and bad tokens before waiting for the body.
     private func parse(_ buffer: Data) -> Parsed {
         guard let end = buffer.range(of: Data("\r\n\r\n".utf8)) else {
             return buffer.count > Self.maxHeader ? .tooLarge : .incomplete
@@ -202,7 +204,8 @@ final class BlueyMCPServer: @unchecked Sendable {
             guard let colon = line.firstIndex(of: ":") else { continue }
             headers[line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
-        let authorization = headers["authorization"]
+        let authorization = headers["authorization"], origin = headers["origin"]
+        guard origin == nil else { return .respond(403) }
         guard handler.authorizes(authorization) else { return .respond(401) }
         let length: Int
         if let value = headers["content-length"] {
@@ -216,11 +219,11 @@ final class BlueyMCPServer: @unchecked Sendable {
         guard length <= Self.maxBody else { return .tooLarge }
         let body = buffer[end.upperBound...]
         guard body.count >= length else { return .incomplete }
-        return .request(method: method, authorization: authorization, body: Data(body.prefix(length)))
+        return .request(method: method, authorization: authorization, origin: origin, body: Data(body.prefix(length)))
     }
 
     private func reply(_ connection: NWConnection, status: Int, body: Data?) {
-        let reason = [200: "OK", 202: "Accepted", 401: "Unauthorized", 405: "Method Not Allowed", 411: "Length Required"][status] ?? "Error"
+        let reason = [200: "OK", 202: "Accepted", 401: "Unauthorized", 403: "Forbidden", 405: "Method Not Allowed", 411: "Length Required"][status] ?? "Error"
         let head = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(body?.count ?? 0)\r\nConnection: close\r\n\r\n"
         connection.send(content: Data(head.utf8) + (body ?? Data()), isComplete: true, completion: .contentProcessed { _ in connection.cancel() })
     }

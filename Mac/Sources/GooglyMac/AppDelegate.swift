@@ -12,7 +12,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let focus = FocusCompanion()
     private let pairingPanel = PairingPanel()
     private lazy var host = RealtimeHost(overlay: overlay, codex: codex)
-
+    private var subscription: SubscriptionVoice?
+    private var mcpServer: BlueyMCPServer?
+    /// Where Subscription mode's `claude` runs: an otherwise empty folder holding only its MCP config.
+    private let voiceDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Googly/voice")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Fonts.registerBundled()
@@ -82,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else { self.host.handle(packet, reply: reply) }
         }
         server.start()
+        startSubscriptionVoice()
         host.onChange = { [weak self] in self?.refreshIcon() }
         codex.onEvent = { [weak self] event in self?.codexEvent(event) }
         codex.warmUp()
@@ -105,6 +110,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         focus.shutdown()
         codex.shutdown()
+        subscription?.asleep()
+        mcpServer?.stop()
+        try? FileManager.default.removeItem(at: voiceDirectory)
+    }
+
+    /// Subscription mode: a local MCP server for his tools and a `claude` that starts when he wakes.
+    private func startSubscriptionVoice() {
+        Task { await ClaudeBinary.lookUpInShell() }
+        let configFile = voiceDirectory.appendingPathComponent("mcp.json")
+        // The server reads tools off the main thread, so it gets the list as it was when claude started.
+        let tools = Locked<[[String: Any]]>(RealtimeHost.tools)
+        let session = ClaudeVoiceSession(arguments: {
+            tools.value = RealtimeHost.tools
+            return SubscriptionVoice.claudeArguments(mcpConfig: configFile)
+        }, workingDirectory: voiceDirectory)
+        let host = host
+        let subscription = SubscriptionVoice(
+            session: session, tokens: ElevenLabsTokens(),
+            mode: { Settings.shared.voiceMode },
+            state: { [weak host] in host?.focusState },
+            send: { [weak self] packet in self?.server.broadcast(packet) },
+            caption: { [weak host] text, done in
+                if done { host?.showReply(text ?? "") } else { host?.streamCaption(text ?? "") }
+            },
+            sleep: { [weak self] in self?.server.broadcast(Packet(command: "sleep")) })
+        self.subscription = subscription
+        host.subscription = subscription
+        let mcp = BlueyMCPServer(handler: MCPHandler(
+            token: MCPHandler.randomToken(),
+            tools: { @Sendable in tools.value },
+            call: { @Sendable name, arguments in
+                let result = await host.runQueuedTool(name, arguments: arguments)
+                return (await subscription.toolOutput(name: name, output: result.text), result.image)
+            }))
+        do {
+            let port = try mcp.start()
+            _ = try SubscriptionVoice.writeMCPConfig(mcp.configJSON(port: port), in: voiceDirectory)
+            mcpServer = mcp
+        } catch {
+            NSLog("Googly: Subscription voice tools unavailable: \(error)")
+        }
     }
 
     /// A Codex job finished or wants a yes. Awake, he hears about it and says so himself (bubble, chirp,
@@ -117,6 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }()
         if host.awake, !server.phoneNames.isEmpty {
+            if subscription?.codexNote(note) == true { return }
             server.broadcast(Packet(command: "codexNote", text: note))
             return
         }

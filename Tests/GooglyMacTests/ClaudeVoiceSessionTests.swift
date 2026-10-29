@@ -19,10 +19,7 @@ final class ClaudeVoiceSessionTests: XCTestCase {
 
     /// Writes an executable `/bin/sh` fake `claude` and returns its URL.
     private func fake(_ body: String) throws -> URL {
-        let url = directory.appendingPathComponent("claude-\(UUID().uuidString)")
-        try "#!/bin/sh\n\(body)\n".write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
-        return url
+        try FakeClaude.script(body, in: directory)
     }
 
     private func session(_ script: String, timeout: TimeInterval = 10) throws -> ClaudeVoiceSession {
