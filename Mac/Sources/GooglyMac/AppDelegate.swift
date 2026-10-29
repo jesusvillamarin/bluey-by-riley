@@ -141,8 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             token: MCPHandler.randomToken(),
             tools: { @Sendable in tools.value },
             call: { @Sendable name, arguments in
+                let turn = await subscription.toolStarted()
                 let result = await host.runQueuedTool(name, arguments: arguments)
-                return (await subscription.toolOutput(name: name, output: result.text), result.image)
+                return (await subscription.toolOutput(name: name, output: result.text, turn: turn), result.image)
             }))
         do {
             let port = try mcp.start()

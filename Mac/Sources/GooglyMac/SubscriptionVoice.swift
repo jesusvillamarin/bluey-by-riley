@@ -10,13 +10,15 @@ final class SubscriptionVoice {
 
     /// One question; `speech` is the phone's turn number (0 for turns the Mac started).
     private final class Turn {
+        let id: Int
         let speech: Int
         let message: String
         /// Set by `voiceCancel` or sleep: nothing more from this turn reaches the phone.
         var cancelled = false
         var sleepAfter = false
         var text = ""
-        init(speech: Int, message: String) {
+        init(id: Int, speech: Int, message: String) {
+            self.id = id
             self.speech = speech
             self.message = message
         }
@@ -33,6 +35,7 @@ final class SubscriptionVoice {
     /// Turns run one at a time, in the order asked: the running one, then those waiting.
     private var turns: [Turn] = []
     private var running: Turn?
+    private var turnCount = 0
     private var chain: Task<Void, Never>?
     private var codexNotes: [String] = []
 
@@ -88,16 +91,21 @@ final class SubscriptionVoice {
         return true
     }
 
+    /// The turn running right now, to be read when a tool call starts and handed back to `toolOutput` when it ends.
+    func toolStarted() -> Int? { running?.id }
+
     /// What a tool's output becomes for Claude. Research reports go to the phone's transcript instead;
-    /// `go_to_sleep` puts him to sleep once his goodbye is out.
-    func toolOutput(name: String, output: String) -> String {
+    /// `go_to_sleep` puts him to sleep once his goodbye is out. Both act only if `turn`, the turn that started the
+    /// tool, is still the running one and not cancelled: a late output from an older turn changes nothing.
+    func toolOutput(name: String, output: String, turn: Int?) -> String {
+        let live = running.flatMap { $0.id == turn && !$0.cancelled ? $0 : nil }
         switch name {
         case "web_research":
             guard let marker = output.range(of: RealtimeHost.reportMarker) else { return output }
-            if running?.cancelled != true { send(Packet(command: "voiceReport", text: String(output[marker.upperBound...]))) }
+            if let live { send(Packet(command: "voiceReport", speech: live.speech, text: String(output[marker.upperBound...]))) }
             return String(output[..<marker.lowerBound])
         case "go_to_sleep":
-            running?.sleepAfter = true
+            live?.sleepAfter = true
             return output
         default:
             return output
@@ -124,7 +132,8 @@ final class SubscriptionVoice {
     // MARK: Turns
 
     private func enqueue(_ message: String, speech: Int) {
-        let turn = Turn(speech: speech, message: message)
+        turnCount += 1
+        let turn = Turn(id: turnCount, speech: speech, message: message)
         turns.append(turn)
         let previous = chain
         chain = Task { @MainActor in
@@ -161,6 +170,8 @@ final class SubscriptionVoice {
             send(Packet(command: "voiceDelta", speech: turn.speech, text: turn.text))
             caption(turn.text, false)
         case .toolUse(let name):
+            // The next message starts fresh: `result` holds only the last one, and the streamed text should end equal to it.
+            turn.text = ""
             send(Packet(command: "voiceTool", speech: turn.speech, tool: name))
         case .result, .other:
             break

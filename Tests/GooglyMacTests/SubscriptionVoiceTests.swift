@@ -177,14 +177,78 @@ final class SubscriptionVoiceTests: XCTestCase {
         XCTAssertFalse(sent.contains { $0.command == "voiceDone" })
     }
 
-    func testResearchReportSplit() throws {
-        let voice = try voice(nil)
-        let output = voice.toolOutput(name: "web_research", output: "Reply line" + RealtimeHost.reportMarker + "Report body")
+    func testResearchReportSplit() async throws {
+        let voice = try voice("while IFS= read -r line; do echo '\(Self.delta)'; sleep 0.5; echo '\(Self.ok)'; done")
+        ask(voice, "research", speech: 6)
+        await wait("turn streaming") { sent.contains { $0.command == "voiceDelta" } }
+        let turn = voice.toolStarted()
+        XCTAssertNotNil(turn)
+        let output = voice.toolOutput(name: "web_research", output: "Reply line" + RealtimeHost.reportMarker + "Report body", turn: turn)
         XCTAssertEqual(output, "Reply line")
         let report = sent.filter { $0.command == "voiceReport" }
         XCTAssertEqual(report.count, 1)
         XCTAssertEqual(report.first?.text, "Report body")
-        XCTAssertEqual(voice.toolOutput(name: "look_at_screen", output: "Screen"), "Screen")
+        XCTAssertEqual(report.first?.speech, 6)
+        XCTAssertEqual(voice.toolOutput(name: "look_at_screen", output: "Screen", turn: turn), "Screen")
+    }
+
+    func testLateToolOutputsOfCancelledTurnChangeNothing() async throws {
+        // "first" streams a delta, then answers after 3 s unless interrupted; "second" streams and answers after 1 s.
+        let voice = try voice("""
+        pending=""
+        while IFS= read -r line; do
+          case "$line" in
+            *control_request*)
+              [ -n "$pending" ] && kill $pending 2>/dev/null
+              pending=""
+              echo '{"type":"result","subtype":"error_during_execution","is_error":true}' ;;
+            *first*)
+              echo '\(Self.delta)'
+              ( sleep 3 >/dev/null 2>&1; echo '\(Self.ok)' ) &
+              pending=$! ;;
+            *) echo '\(Self.delta)'; sleep 1; echo '\(Self.ok)' ;;
+          esac
+        done
+        """)
+        ask(voice, "first", speech: 1)
+        await wait("turn 1 streaming") { sent.contains { $0.speech == 1 } }
+        let first = voice.toolStarted()
+        XCTAssertNotNil(first)
+        XCTAssertTrue(voice.handle(Packet(command: "voiceCancel", speech: 1)) { _ in })
+        ask(voice, "second", speech: 2)
+        await wait("turn 2 streaming") { sent.contains { $0.speech == 2 } }
+        XCTAssertNotEqual(voice.toolStarted(), first)
+        XCTAssertEqual(voice.toolOutput(name: "go_to_sleep", output: "Going to sleep.", turn: first), "Going to sleep.")
+        XCTAssertEqual(voice.toolOutput(name: "web_research", output: "Reply" + RealtimeHost.reportMarker + "Report", turn: first), "Reply")
+        await wait("voiceDone 2") { done(2) != nil }
+        XCTAssertFalse(log.contains("SLEEP"), "\(log)")
+        XCTAssertFalse(log.contains("voiceReport"), "\(log)")
+        XCTAssertEqual(done(2)?.text, "Hi")
+    }
+
+    func testLateToolOutputWithNoTurnRunningChangesNothing() async throws {
+        let voice = try voice(nil)
+        _ = voice.toolOutput(name: "go_to_sleep", output: "x", turn: nil)
+        _ = voice.toolOutput(name: "web_research", output: "a" + RealtimeHost.reportMarker + "b", turn: 1)
+        XCTAssertTrue(log.isEmpty, "\(log)")
+    }
+
+    func testStreamedTextRestartsAfterToolUse() async throws {
+        let voice = try voice("""
+        while IFS= read -r line; do
+          echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Checking."}}}'
+          echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__bluey__get_time","input":{}}]}}'
+          echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"It'"'"'s 1."}}}'
+          echo '{"type":"result","subtype":"success","is_error":false,"result":"It'"'"'s 1."}'
+        done
+        """)
+        ask(voice, "time?", speech: 7)
+        await wait("voiceDone") { done(7) != nil }
+        let deltas = sent.filter { $0.command == "voiceDelta" }.compactMap(\.text)
+        XCTAssertEqual(deltas, ["Checking.", "It's 1."])
+        XCTAssertEqual(sent.last?.text, "It's 1.")
+        XCTAssertEqual(captions.last?.text, "It's 1.")
+        XCTAssertFalse(deltas.contains { $0.contains("Checking.It's") })
     }
 
     func testGoToSleepAfterDone() async throws {
@@ -194,7 +258,7 @@ final class SubscriptionVoiceTests: XCTestCase {
         """)
         ask(voice, "bye", speech: 2)
         await wait("turn streaming") { sent.contains { $0.command == "voiceDelta" } }
-        _ = voice.toolOutput(name: "go_to_sleep", output: "Going to sleep. Say a very short goodbye.")
+        _ = voice.toolOutput(name: "go_to_sleep", output: "Going to sleep. Say a very short goodbye.", turn: voice.toolStarted())
         XCTAssertFalse(log.contains("SLEEP"), "sleeps only after the reply")
         await wait("voiceDone") { done(2) != nil }
         XCTAssertEqual(log.filter { $0 == "SLEEP" }.count, 1)
