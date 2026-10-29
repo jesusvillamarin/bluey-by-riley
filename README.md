@@ -1,6 +1,6 @@
 # Bluey
 
-Bluey is a little blueberry focus friend. Keep your iPhone sideways under your Mac monitor: his eyes follow your mouse, and his matching blue cursor appears when he has something to point out. Same character, animation, British personality, speech bubbles and cartoon chirp. No spoken voice output and no glow.
+Bluey is a little blueberry focus friend. Keep your iPhone sideways under your Mac monitor: his eyes follow your mouse, and his matching blue cursor appears when he has something to point out. Same character, animation, British personality, speech bubbles and cartoon chirp. No glow. In **Subscription** voice mode he can also speak his replies aloud on the phone.
 
 ## Start focusing
 
@@ -8,7 +8,7 @@ Bluey is a little blueberry focus friend. Keep your iPhone sideways under your M
 2. On Mac, choose **Pair iPhone (QR)…** from Bluey's menu. On iPhone choose **Pair Mac**, then scan the code. Treat this code as a private pairing credential.
 3. Add your OpenAI API key through **OpenAI Key…** in the Mac menu. It stays in `~/Library/Application Support/Googly/keys.json`, with private file permissions. It never goes to the phone or into this repository.
 4. Grant **Screen Recording** on Mac. If macOS requests it, quit and reopen Bluey after granting access. **Microphone** on iPhone enables voice; **Camera** is used only for QR pairing; **Local Network** lets the phone find the Mac. Accessibility is optional for the existing explicitly requested computer-control tools, and isn't needed for focus classification.
-5. Hold Bluey's face and describe the task, optionally giving a duration: “I'm making a Codex video for 30 minutes.” Release to start. The microphone captures while held and buffers the beginning in memory while the voice connection starts. Only held audio is sent; no spoken audio output is played. The default is 30 minutes, with a 1–240 minute range. You can also tap **Focus**, type a task, and start there.
+5. Hold Bluey's face and describe the task, optionally giving a duration: “I'm making a Codex video for 30 minutes.” Release to start. The microphone captures while held and buffers the beginning in memory while the voice connection starts. Only held audio is sent. The default is 30 minutes, with a 1–240 minute range. You can also tap **Focus**, type a task, and start there.
 
 The task appears at the phone's top left, with a large white countdown at bottom right on both devices. Small pause/resume, end and Focus icons sit at the phone's bottom left, alongside the listening status icon. Hold Bluey's face to speak. Controls are also available in the Mac menu and through voice. **⌃⌥S** pauses focus and stops computer control. Pause, end, expiry, Mac lock/sleep, phone backgrounding or disconnect stops monitoring. Reconnection and unlocking never resume it automatically. A missing heartbeat is detected within five seconds; outstanding results are discarded.
 
@@ -21,6 +21,44 @@ During a running focus session the Mac captures its **main display every 30 seco
 Bluey keeps screenshots in memory and does not save them by default. Local focus history stores the task, timings, classifications, model probability/confidence estimates and nudge markers, not images or OCR text. Mac history is `~/Library/Application Support/Googly/focus-history.json`; a copy is retained on the phone. OpenAI's processing and retention follow your API account's data controls; “not saved by Bluey” is not a promise of zero retention by OpenAI. Pause before opening anything you don't want shared.
 
 The phone gets short-lived Realtime client secrets, never the Mac's long-lived key. Bonjour discovery still uses `_googly._tcp`, but connections now authenticate using a QR-shared 256-bit secret, a fresh challenge and HMAC. Direction-specific HKDF keys protect ordered AES-GCM records against eavesdropping, tampering and replay. Unpaired clients cannot request screenshots, tools or Realtime secrets. The phone stores its pairing credential in its device-only Keychain. The Mac stores its pairing credential in a private support file. Older builds using plaintext pairing must be updated on both devices.
+
+## Subscription voice
+
+Bluey has two voice modes, chosen under **Voice** in the Mac menu:
+
+- **Fast (OpenAI Realtime)**, the default, works as before and is billed to your OpenAI API key.
+- **Subscription (Claude + ElevenLabs)**:
+  - **Hearing you:** while you hold his face, the phone streams your speech to ElevenLabs Scribe v2 Realtime. Releasing commits the turn.
+  - **Thinking:** the Mac answers the transcript with a warm `claude -p` process on Haiku, using your own Claude Code sign-in.
+  - **Speaking:** ElevenLabs TTS (`eleven_flash_v2_5`) speaks the reply on the phone.
+
+He answers in the language you speak to him: English, or Latin American (Colombian/Mexican) Spanish.
+
+Setup:
+
+1. Install Claude Code and sign in once (`claude` in a terminal). Bluey runs the `claude` binary from `~/.local/bin` or your login shell's `PATH`.
+2. Add an ElevenLabs API key through **ElevenLabs Key…** in the Mac menu. It is stored next to the OpenAI key in `keys.json`, with private file permissions.
+3. Choose **Voice → Subscription (Claude + ElevenLabs)**. **Voice → Voice…** lists the premade ElevenLabs voices that speak both English and Spanish. **Speak Aloud** turns spoken replies off, leaving bubbles only.
+
+An OpenAI key is still needed for focus checks, nudges and `web_research`. If Subscription mode fails (no ElevenLabs key, `claude` missing or signed out, ElevenLabs down), Bluey says so in a bubble. It never quietly switches to the paid Fast mode.
+
+Meeting notes are transcribed with Scribe v2 batch with speaker separation when an ElevenLabs key is set, and with OpenAI `gpt-transcribe` otherwise. Meeting recording itself is still off by default.
+
+Privacy in Subscription mode:
+
+- **Your speech:** the audio goes to ElevenLabs only while you hold Bluey's face.
+- **The phone:** it never sees the ElevenLabs key. It gets single-use Scribe tokens, which the Mac mints and discards after 13 minutes.
+- **Transcripts:** they go to Anthropic through your Claude Code account.
+- **His replies:** the reply text goes to ElevenLabs to be spoken.
+- **His tools:** Bluey's tools reach `claude` through an MCP server on the Mac. It listens only on `127.0.0.1` and needs a random bearer token, renewed at each launch, that is stored in a private file and never passed on a command line. Browser requests (any `Origin` header) are refused.
+- **Retention:** each provider's data controls apply.
+
+Measured on the Mac:
+
+- With `claude` already warm, it starts replying in about 0.4–0.65 s.
+- After a tool call, the reply starts about 0.43 s after the tool result.
+
+End-to-end latency on the phone (release → first word spoken) still needs a device run.
 
 ## How nudges work
 
@@ -84,15 +122,19 @@ With a separate signed Bluey app already running, `build/Bluey.app/Contents/MacO
 
 `build/Bluey.app/Contents/MacOS/GooglyMac --focus-developer-test` checks the same live path at 4× clock speed and the ten-real-second cadence, then restores the previous Developer Mode setting. It also skips an existing active session.
 
+`build/Bluey.app/Contents/MacOS/GooglyMac --voice-claude-test` runs a short, live Subscription-mode conversation about a **synthetic screen**, never your desktop. It uses your Claude Code sign-in and Bluey's tools through the local MCP server, prints timestamped events and ends in PASS or FAIL. `GOOGLY_DEMO_TRANSCRIBE=<file.m4a> build/Bluey.app/Contents/MacOS/GooglyMac` transcribes a recording through the meeting-notes path (Scribe when an ElevenLabs key is set).
+
 `build/Bluey.app/Contents/MacOS/GooglyMac --focus-nudge-test` sends the same immediate test notification as the phone's **Test a nudge** button. It requires Developer Mode and secure pairing, captures no screen, and leaves focus sessions unchanged. Automatic nudge delivery, fallback failures and cancellation also have fixture-based coordinator tests.
 
-Latest local verification: **22 deterministic tests passed**, both signed targets built, and the updated apps were installed and opened on Mac and a physical iPhone 16 Pro. QR pairing and voice-to-task were verified on the phone. Live integration checked the scheduled Decisions request, 4× clock, pause/resume/end and synchronized history. A real Mac test bubble was visually checked, and the phone confirmed receiving the nudge notification.
+Latest local verification (Subscription voice): **217 deterministic tests passed** (153 Mac, 64 shared), and the Mac app and the iOS app (unsigned) built with no warnings. Live `--voice-claude-test` confirmed multi-turn memory and MCP tools through `claude -p`. Scribe, ElevenLabs speech and the phone flow still need a device run with an ElevenLabs key.
+
+Earlier focus verification: both signed targets built, and the updated apps were installed and opened on Mac and a physical iPhone 16 Pro. QR pairing and voice-to-task were verified on the phone. Live integration checked the scheduled Decisions request, 4× clock, pause/resume/end and synchronized history. A real Mac test bubble was visually checked, and the phone confirmed receiving the nudge notification.
 
 Live API tests using **synthetic screenshots and OCR** classified an unrelated Twitter feed as off-task and directly relevant Twitter research as on-task. Automatic nudge delivery, capture/wording failures and cancellation were covered by injected fixture tests. These are separate from the physical notification test. Real off-task browsing with the latest classifier, audible chirp loudness and pointer targeting still need a manual device run; the synthetic examples are not an accuracy benchmark.
 
 ## Existing capabilities
 
-The existing manual pointing, voice context, research cards, Codex controller and session history remain available. The focus path does not start the old continuous meeting-audio recorder by default. Realtime output remains text only, with bubbles and chirps. The long-lived key stays on the Mac.
+The existing manual pointing, voice context, research cards, Codex controller and session history remain available. The focus path does not start the old continuous meeting-audio recorder by default. Fast mode's Realtime output remains text only, with bubbles and chirps. The long-lived keys stay on the Mac.
 
 ## Layout
 
