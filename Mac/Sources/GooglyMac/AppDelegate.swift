@@ -123,9 +123,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let tools = Locked<[[String: Any]]>(RealtimeHost.tools)
         let session = ClaudeVoiceSession(arguments: {
             tools.value = RealtimeHost.tools
-            return SubscriptionVoice.claudeArguments(mcpConfig: configFile)
+            return SubscriptionVoice.claudeArguments(mcpConfig: configFile, speakAloud: Settings.shared.speakAloud)
         }, workingDirectory: voiceDirectory)
         let host = host
+        let voice = VoiceChoice(saved: { Settings.shared.voiceID }, save: { Settings.shared.voiceID = $0 })
         let subscription = SubscriptionVoice(
             session: session, tokens: ElevenLabsTokens(),
             mode: { Settings.shared.voiceMode },
@@ -135,7 +136,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if let text { if done { host?.showReply(text) } else { host?.streamCaption(text) } }
                 else if done { host?.clearReply() }
             },
-            sleep: { [weak self] in self?.server.broadcast(Packet(command: "sleep")) })
+            sleep: { [weak self] in self?.server.broadcast(Packet(command: "sleep")) },
+            speakAloud: { Settings.shared.speakAloud },
+            speak: { voice.speak($0) })
         self.subscription = subscription
         host.subscription = subscription
         let mcp = BlueyMCPServer(handler: MCPHandler(
@@ -365,6 +368,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         restartIfAwake()  // his ears and brain change with this switch
     }
 
+    @objc private func toggleSpeakAloud() {
+        settings.speakAloud.toggle()
+        // Whether he knows he is read aloud is in the prompt claude started with, so the next turn needs a new one.
+        if settings.voiceMode == .subscription { restartIfAwake() }
+    }
+
+    /// Lists the premade voices that speak English and Spanish and saves the one picked.
+    @objc private func pickVoice() {
+        Task { @MainActor in
+            let voices: [ElevenLabs.Voice]
+            do { voices = try await ElevenLabs.listVoices() } catch {
+                host.showReply("Couldn't load voices: \(error.localizedDescription)")
+                return
+            }
+            // A key whose voices aren't verified for both languages still gets a list to choose from.
+            let choices = ElevenLabs.bilingual(voices).isEmpty ? voices : ElevenLabs.bilingual(voices)
+            guard !choices.isEmpty else { host.showReply("Couldn't load voices: ElevenLabs listed none."); return }
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "His Voice"
+            alert.informativeText = "Premade ElevenLabs voices that speak English and Spanish."
+            let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 26), pullsDown: false)
+            popup.addItems(withTitles: choices.map(\.name))
+            let current = settings.voiceID.isEmpty ? ElevenLabs.defaultVoice(from: voices)?.id : settings.voiceID
+            if let index = choices.firstIndex(where: { $0.id == current }) { popup.selectItem(at: index) }
+            alert.accessoryView = popup
+            alert.addButton(withTitle: "Use This Voice")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn, popup.indexOfSelectedItem >= 0 else { return }
+            settings.voiceID = choices[popup.indexOfSelectedItem].id
+        }
+    }
+
     @objc private func setMood(_ item: NSMenuItem) {
         if let mood = item.representedObject as? String, let m = Mood(rawValue: mood) { settings.mood = m }
     }
@@ -469,6 +505,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             v.state = settings.voiceMode == mode ? .on : .off
             voiceMenu.addItem(v)
         }
+        voiceMenu.addItem(.separator())
+        let speak = item("Speak Aloud", #selector(toggleSpeakAloud))
+        speak.state = settings.speakAloud ? .on : .off
+        voiceMenu.addItem(speak)
+        voiceMenu.addItem(item("Voice…", #selector(pickVoice)))
         menu.addItem(submenu("Voice", voiceMenu))
         menu.addItem(.separator())
 

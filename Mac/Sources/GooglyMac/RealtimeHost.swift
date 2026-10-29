@@ -698,9 +698,20 @@ final class RealtimeHost {
     static var personality: String {
         get {
             let saved = UserDefaults.standard.string(forKey: "personality")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return saved.isEmpty ? defaultPersonality : saved
+            return saved.isEmpty ? defaultPersonality : withoutLegacySpeechRule(saved)
         }
         set { UserDefaults.standard.set(newValue, forKey: "personality") }
+    }
+
+    /// Personalities saved before voice notes existed say "You never speak out loud: your replies pop up as a tiny speech
+    /// bubble, so keep them…", which now contradicts the notes (he is read aloud in Subscription mode). Only that exact
+    /// fragment goes; the sentence it began is capitalised again and the rest of the user's text stays as written.
+    static func withoutLegacySpeechRule(_ personality: String) -> String {
+        let fragment = "You never speak out loud: your replies pop up as a tiny speech bubble, so "
+        guard let range = personality.range(of: fragment) else { return personality }
+        var rest = String(personality[range.upperBound...])
+        if rest.hasPrefix("keep them to ") { rest = "keep your replies to " + rest.dropFirst("keep them to ".count) }
+        return personality[..<range.lowerBound] + (rest.first.map { $0.uppercased() + rest.dropFirst() } ?? "")
     }
 
     /// How he uses his tools. Always included, whatever the personality says.

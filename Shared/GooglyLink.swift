@@ -39,7 +39,7 @@ public struct Packet: Codable, Sendable {
     public var volume: Double?
     /// A request or event: "testVoice" (phone→Mac), "playing"/"done" (phone→Mac), "stopSpeech" (Mac→phone).
     public var command: String?
-    /// Speech audio (mp3, base64) for the phone to play.
+    /// Audio (base64): a `voiceAudio` packet carries speech for the phone to play as PCM16 24 kHz mono; meeting notes send recorded audio the other way.
     public var audio: String?
     /// Which speech an audio packet or a playing/done event belongs to.
     public var speech: Int?

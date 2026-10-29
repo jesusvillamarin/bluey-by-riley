@@ -54,6 +54,19 @@ final class Settings {
         set { defaults.set(newValue.rawValue, forKey: "voiceMode"); onChange?() }
     }
 
+    /// Subscription mode reads his replies aloud (ElevenLabs) as well as showing them.
+    var speakAloud: Bool {
+        get { defaults.object(forKey: "speakAloud") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "speakAloud"); onChange?() }
+    }
+
+    /// His ElevenLabs voice. Empty until the first reply is spoken, when the default is picked and saved here
+    /// (from a background thread, so this doesn't call `onChange`).
+    var voiceID: String {
+        get { defaults.string(forKey: "voiceID") ?? "" }
+        set { defaults.set(newValue, forKey: "voiceID") }
+    }
+
     /// The mood picked by hand in the menu.
     var mood: Mood {
         get { Mood(rawValue: defaults.string(forKey: "mood") ?? "") ?? .listening }

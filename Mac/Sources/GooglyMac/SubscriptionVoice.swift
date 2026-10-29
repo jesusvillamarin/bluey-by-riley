@@ -2,25 +2,88 @@ import Foundation
 import GooglyShared
 
 /// The Mac side of a Subscription-mode turn: the phone sends what was said, a warm `claude -p` answers here,
-/// and the reply streams back to the phone as packets and into his bubble.
+/// and the reply streams back to the phone as packets and into his bubble. With Speak Aloud on, each finished
+/// sentence is turned into speech right away and its audio follows to the phone, in order, while he keeps writing.
 @MainActor
 final class SubscriptionVoice {
     /// Words Scribe should expect.
     static let keyterms = ["Bluey", "Codex", "Claude"]
 
     /// One question; `speech` is the phone's turn number (0 for turns the Mac started).
-    private final class Turn {
+    @MainActor private final class Turn {
         let id: Int
         let speech: Int
         let message: String
         /// Set by `voiceCancel` or sleep: nothing more from this turn reaches the phone.
-        var cancelled = false
+        private(set) var cancelled = false
         var sleepAfter = false
         var text = ""
+        /// Cuts `text` into sentences for `audio`. Starts over when a tool call restarts the text.
+        var splitter = SentenceSplitter()
+        /// Nil when Speak Aloud was off as the turn began.
+        var audio: TurnAudio?
         init(id: Int, speech: Int, message: String) {
             self.id = id
             self.speech = speech
             self.message = message
+        }
+
+        /// Silences the turn at once: its speech request is cancelled and no more of it is sent.
+        func cancel() {
+            cancelled = true
+            audio?.stop()
+        }
+    }
+
+    /// Speaks one turn's sentences strictly in order, handing each audio chunk to `emit`.
+    @MainActor private final class TurnAudio {
+        private let speak: (String) -> AsyncThrowingStream<Data, Error>
+        private let emit: (Data) -> Void
+        private let sentences: AsyncStream<String>.Continuation
+        private var worker: Task<Void, Never>?
+        private var stopped = false
+        /// The first speech failure; the turn's remaining sentences are skipped after it.
+        private(set) var failure: Error?
+        private(set) var chunksSent = 0
+
+        init(speak: @escaping (String) -> AsyncThrowingStream<Data, Error>, emit: @escaping (Data) -> Void) {
+            self.speak = speak
+            self.emit = emit
+            var continuation: AsyncStream<String>.Continuation!
+            let queue = AsyncStream<String> { continuation = $0 }
+            sentences = continuation
+            worker = Task { @MainActor in await self.work(queue) }
+        }
+
+        func say(_ sentence: String) { sentences.yield(sentence) }
+
+        /// No more sentences are coming: returns once everything queued has been spoken (or has failed).
+        func finish() async {
+            sentences.finish()
+            await worker?.value
+        }
+
+        /// Drops what's queued and cancels the speech request in flight.
+        func stop() {
+            stopped = true
+            sentences.finish()
+            worker?.cancel()
+        }
+
+        private func work(_ queue: AsyncStream<String>) async {
+            for await sentence in queue {
+                // A line of only punctuation has nothing to say.
+                guard !stopped, failure == nil, sentence.contains(where: { $0.isLetter || $0.isNumber }) else { continue }
+                do {
+                    for try await chunk in speak(sentence) {
+                        guard !stopped else { break }
+                        chunksSent += 1
+                        emit(chunk)
+                    }
+                } catch {
+                    if !stopped { failure = error }
+                }
+            }
         }
     }
 
@@ -32,6 +95,9 @@ final class SubscriptionVoice {
     /// His bubble: `done` false streams `text`, true shows a finished line; nil text with `done` true takes the bubble down.
     private let caption: (_ text: String?, _ done: Bool) -> Void
     private let sleep: () -> Void
+    private let speakAloud: () -> Bool
+    /// The text as speech: PCM16 24 kHz mono chunks. Ending the stream early must cancel the request.
+    private let speak: (_ text: String) -> AsyncThrowingStream<Data, Error>
 
     /// Turns run one at a time, in the order asked: the running one, then those waiting.
     private var turns: [Turn] = []
@@ -41,7 +107,8 @@ final class SubscriptionVoice {
     private var codexNotes: [String] = []
 
     init(session: ClaudeVoiceSession, tokens: ElevenLabsTokens, mode: @escaping () -> VoiceMode, state: @escaping () -> String?,
-         send: @escaping (Packet) -> Void, caption: @escaping (_ text: String?, _ done: Bool) -> Void, sleep: @escaping () -> Void) {
+         send: @escaping (Packet) -> Void, caption: @escaping (_ text: String?, _ done: Bool) -> Void, sleep: @escaping () -> Void,
+         speakAloud: @escaping () -> Bool, speak: @escaping (_ text: String) -> AsyncThrowingStream<Data, Error>) {
         self.session = session
         self.tokens = tokens
         self.mode = mode
@@ -49,6 +116,8 @@ final class SubscriptionVoice {
         self.send = send
         self.caption = caption
         self.sleep = sleep
+        self.speakAloud = speakAloud
+        self.speak = speak
     }
 
     /// Handles the voice commands; false for anything else.
@@ -84,7 +153,7 @@ final class SubscriptionVoice {
             enqueue((state().map { "Right now (state information only): \($0)\n\n" } ?? "") + text, speech: speech)
         case "voiceCancel":
             let speech = packet.speech ?? 0
-            for turn in turns where turn.speech == speech { turn.cancelled = true }
+            for turn in turns where turn.speech == speech { turn.cancel() }
             if let running, running.speech == speech {
                 session.interrupt()
                 // Nothing more from this turn will reach the bubble, so take down what it left there.
@@ -129,7 +198,7 @@ final class SubscriptionVoice {
 
     /// He went to sleep: end the conversation and drop anything still waiting.
     func asleep() {
-        for turn in turns { turn.cancelled = true }
+        for turn in turns { turn.cancel() }
         codexNotes = []
         session.stop()
     }
@@ -152,12 +221,29 @@ final class SubscriptionVoice {
     private func run(_ turn: Turn) async {
         guard !turn.cancelled else { return }
         running = turn
-        defer { running = nil }
+        // Whatever way the turn ends, nothing of its speech outlives it.
+        defer { running = nil; turn.audio?.stop() }
+        if speakAloud() {
+            turn.audio = TurnAudio(speak: speak, emit: { [weak self, turn] data in
+                guard let self, !turn.cancelled else { return }
+                self.send(Packet(command: "voiceAudio", audio: data.base64EncodedString(), speech: turn.speech))
+            })
+        }
         do {
             let reply = try await session.ask(turn.message) { [weak self, turn] event in self?.received(event, for: turn) }
             guard !turn.cancelled else { return }
             send(Packet(command: "voiceDone", speech: turn.speech, text: reply))
             caption(reply, true)
+            if let audio = turn.audio {
+                // `reply` is the authority. Normally it equals what was streamed, so only the unfinished rest is new;
+                // text that disagrees with what was already spoken is ignored rather than said twice.
+                (turn.splitter.feed(reply) + [turn.splitter.finish()].compactMap { $0 }).forEach(audio.say)
+                await audio.finish()
+                guard !turn.cancelled else { return }
+                if let failure = audio.failure { caption("Couldn't speak: \(failure.localizedDescription)", true) }
+                // The phone is told the audio is over only if it got some, so it never waits for sound that isn't coming.
+                if audio.chunksSent > 0 { send(Packet(command: "voiceAudioEnd", speech: turn.speech)) }
+            }
             if turn.sleepAfter {
                 // He just said goodbye: an update that arrived meanwhile must not start a new turn as he drops off.
                 codexNotes = []
@@ -178,8 +264,13 @@ final class SubscriptionVoice {
             turn.text += text
             send(Packet(command: "voiceDelta", speech: turn.speech, text: turn.text))
             caption(turn.text, false)
+            turn.splitter.feed(turn.text).forEach { turn.audio?.say($0) }
         case .toolUse(let name):
-            // The next message starts fresh: `result` holds only the last one, and the streamed text should end equal to it.
+            // What he said before the tool (e.g. "…doing some research…") is spoken now, so the wait isn't silent; it was
+            // never part of `result`, so nothing is said twice. Then the next message starts fresh: `result` holds only
+            // the last one, and the streamed text should end equal to it.
+            if let rest = turn.splitter.finish() { turn.audio?.say(rest) }
+            turn.splitter = SentenceSplitter()
             turn.text = ""
             send(Packet(command: "voiceTool", speech: turn.speech, tool: name))
         case .result, .other:
@@ -211,9 +302,9 @@ final class SubscriptionVoice {
     }
 
     /// The `claude -p` arguments for Subscription mode; the token stays in the file, out of `ps`.
-    static func claudeArguments(mcpConfig: URL) -> [String] {
+    static func claudeArguments(mcpConfig: URL, speakAloud: Bool) -> [String] {
         ClaudeStream.arguments(model: "haiku",
-                               systemPrompt: RealtimeHost.instructions + "\n\n" + RealtimeHost.voiceNotes(mode: .subscription, speakAloud: false),
+                               systemPrompt: RealtimeHost.instructions + "\n\n" + RealtimeHost.voiceNotes(mode: .subscription, speakAloud: speakAloud),
                                mcpConfig: mcpConfig.path)
     }
 }
