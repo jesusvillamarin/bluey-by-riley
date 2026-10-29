@@ -23,7 +23,7 @@ final class LiveVoice: NSObject, ObservableObject {
     private var lastEvent = ""
     private var toolNames: [String] = []
 
-    static let model = "gpt-realtime-2.1"
+    static let model = GooglyModels.realtime
 
     /// Asks the Mac for a short-lived key. Calls back with nil on failure.
     var requestToken: ((@escaping (String?) -> Void) -> Void)?

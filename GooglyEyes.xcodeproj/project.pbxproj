@@ -26,6 +26,7 @@
 		C54C1E0F76ECB8F94A9AEE70 /* FocusSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFB5A3FC752388C5F4235248 /* FocusSession.swift */; };
 		C763037B3F88C28F89EB61F0 /* MacLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = B44C98F6A89143BA9C926480 /* MacLink.swift */; };
 		CD8A48CB04D56A4BEF47D6AB /* GooglyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C95CBBB828E99EC09708E98E /* GooglyApp.swift */; };
+		E35CDC5D948C61DE9800F232 /* GooglyModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F53A67C8C3988D5720951935 /* GooglyModels.swift */; };
 		EADE24E60818A63E82366B42 /* FaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3AAA80221D679C8EAAE925 /* FaceView.swift */; };
 		F171BD7BAF58935750650B4D /* FocusClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5028F9B110929B5CAC427465 /* FocusClient.swift */; };
 		F5C101DF403B8B41F401C234 /* SecurePairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C5BC31DC1FF4C0765EA0688 /* SecurePairing.swift */; };
@@ -58,6 +59,7 @@
 		C95CBBB828E99EC09708E98E /* GooglyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GooglyApp.swift; sourceTree = "<group>"; };
 		D0EEE8F996B2F95804C1ECF8 /* Fredoka.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Fredoka.ttf; sourceTree = "<group>"; };
 		E884B5117C895A0439FDFE12 /* GooglyEyes.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = GooglyEyes.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F53A67C8C3988D5720951935 /* GooglyModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GooglyModels.swift; sourceTree = "<group>"; };
 		FFB5A3FC752388C5F4235248 /* FocusSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusSession.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -118,6 +120,7 @@
 			children = (
 				FFB5A3FC752388C5F4235248 /* FocusSession.swift */,
 				4F71F206238433A6F710528B /* GooglyLink.swift */,
+				F53A67C8C3988D5720951935 /* GooglyModels.swift */,
 				4A31DC33ABF7869BDE4E0F6C /* Palette.swift */,
 				6C5BC31DC1FF4C0765EA0688 /* SecurePairing.swift */,
 				9523CAD3450502FE203C1BBD /* VoiceTurnBuffer.swift */,
@@ -163,7 +166,6 @@
 				};
 			};
 			buildConfigurationList = FF71141EA9D22D07B4D3C0E4 /* Build configuration list for PBXProject "GooglyEyes" */;
-			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -173,6 +175,7 @@
 			mainGroup = 4F61868F579B512B69F537A4;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
+			productRefGroup = 554494C1002555E490E37EB6 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -211,6 +214,7 @@
 				B7F0853D97ECC4C28D0F6986 /* FocusViews.swift in Sources */,
 				CD8A48CB04D56A4BEF47D6AB /* GooglyApp.swift in Sources */,
 				6E03A7EBF9AAFFE4AC87ADE4 /* GooglyLink.swift in Sources */,
+				E35CDC5D948C61DE9800F232 /* GooglyModels.swift in Sources */,
 				C2D2BC58460F12FB0D562BB7 /* LiveVoice.swift in Sources */,
 				C763037B3F88C28F89EB61F0 /* MacLink.swift in Sources */,
 				68F797C6A1D3EC7A83674C2A /* PairingView.swift in Sources */,

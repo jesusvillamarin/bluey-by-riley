@@ -65,7 +65,7 @@ enum FocusAPI {
             "properties": ["message": ["type": "string"], "target_id": ["type": ["string", "null"]],
                            "target_quote": ["type": ["string", "null"]]],
             "required": ["message", "target_id", "target_quote"]]
-        let data = try await post("responses", ["model": "gpt-5.5", "store": false,
+        let data = try await post("responses", ["model": "gpt-6.1-terra", "store": false,
             "instructions": """
             You are Bluey, a gentle little British blueberry focus friend. The app observed repeated off-task
             checks. Write one short playful sentence, at most 18 words. Never scold, shame or claim certainty.

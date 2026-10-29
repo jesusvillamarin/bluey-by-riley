@@ -6,7 +6,7 @@ import GooglyShared
 /// Everything here runs on the main thread, alongside the cursor it drives.
 @MainActor
 final class RealtimeHost {
-    static let model = "gpt-realtime-2.1"
+    static let model = GooglyModels.realtime
 
     private let overlay: CursorOverlay
     private let codex: CodexController
