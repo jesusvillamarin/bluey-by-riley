@@ -1,10 +1,9 @@
 import Foundation
 
-/// Turns recorded audio into a proper transcript (with speaker labels) and keeps each session's
+/// Turns recorded audio into a proper transcript and keeps each session's
 /// meeting notes as plain files any agent can read: ~/Documents/Bluey Notes/<date> <id>/.
 enum MeetingNotes {
-    static let model = "gpt-4o-transcribe-diarize"
-    static let fallbackModel = "gpt-transcribe"
+    static let model = "gpt-transcribe"
 
     static var root: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -46,13 +45,12 @@ enum MeetingNotes {
         session, named by start time.
 
         In each session folder:
-        - `notes.md`: the full transcript with timestamps and speaker labels, plus Riley's questions to Bluey, \
+        - `notes.md`: the full transcript with timestamps, plus Riley's questions to Bluey, \
         Bluey's replies and any research reports, in time order. Start here.
         - `session.json`: the same data, structured.
         - `audio/`: the raw recording, as five-minute AAC chunks.
 
-        Speaker letters (A, B, …) are assigned per five-minute chunk, so the same letter can mean different people \
-        in different chunks. Lines marked "(live)" are a rough live transcript for audio that hasn't been fully \
+        Each five-minute chunk is one block of text; speakers aren't told apart. Lines marked "(live)" are a rough live transcript for audio that hasn't been fully \
         transcribed yet.
         """
         try? text.write(to: url, atomically: true, encoding: .utf8)
@@ -66,38 +64,9 @@ enum MeetingNotes {
         let audioURL = folder.appendingPathComponent("audio", isDirectory: true)
         try? FileManager.default.createDirectory(at: audioURL, withIntermediateDirectories: true)
         try audio.write(to: audioURL.appendingPathComponent(String(format: "chunk-%03d.m4a", index)))
-        do {
-            return (try await diarized(audio), folder)
-        } catch {
-            NSLog("Googly: diarized transcription failed (\(error)), trying \(fallbackModel)")
-            return (try await plain(audio), folder)
-        }
-    }
-
-    private static func diarized(_ audio: Data) async throws -> [Segment] {
-        let json = try await post(audio, fields: ["model": model, "response_format": "diarized_json", "chunking_strategy": "auto"])
-        let raw = (json["segments"] as? [[String: Any]] ?? []).map {
-            Segment(speaker: $0["speaker"] as? String ?? "?", start: $0["start"] as? Double ?? 0,
-                    end: $0["end"] as? Double ?? 0, text: ($0["text"] as? String ?? "").trimmingCharacters(in: .whitespaces))
-        }
-        // Join one speaker's consecutive pieces into a single turn.
-        var turns: [Segment] = []
-        for segment in raw where !segment.text.isEmpty {
-            if var last = turns.last, last.speaker == segment.speaker, segment.start - last.end < 2.5 {
-                last.text += " " + segment.text
-                last.end = segment.end
-                turns[turns.count - 1] = last
-            } else {
-                turns.append(segment)
-            }
-        }
-        return turns
-    }
-
-    private static func plain(_ audio: Data) async throws -> [Segment] {
-        let json = try await post(audio, fields: ["model": fallbackModel, "response_format": "json"])
+        let json = try await post(audio, fields: ["model": model, "response_format": "json"])
         let text = (json["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? [] : [Segment(speaker: "?", start: 0, end: 0, text: text)]
+        return (text.isEmpty ? [] : [Segment(speaker: "?", start: 0, end: 0, text: text)], folder)
     }
 
     private static func post(_ audio: Data, fields: [String: String]) async throws -> [String: Any] {

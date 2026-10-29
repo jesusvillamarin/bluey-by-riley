@@ -251,7 +251,7 @@ struct SessionDetailView: View {
         I recorded a meeting with my Bluey app on \(session.started.formatted(date: .complete, time: .shortened)). \
         The notes are on my Mac in \(path)
 
-        - notes.md: the full transcript with timestamps and speaker labels (A, B, … per five-minute chunk), plus \
+        - notes.md: the full transcript with timestamps (one block per five-minute chunk), plus \
         my questions to Bluey, its replies and research reports. Start here.
         - session.json: the same data, structured.
         - audio/: the original recording in five-minute chunks.

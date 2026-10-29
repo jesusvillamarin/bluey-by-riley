@@ -44,7 +44,7 @@ final class RealtimeHost {
                 }
             }
         case "transcribe":
-            // A recorded chunk from the phone: save it, transcribe it with speakers, send the lines back.
+            // A recorded chunk from the phone: save it, transcribe it, send the lines back.
             guard let meta = packet.text.flatMap({ try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }),
                   let session = meta["session"] as? String, let index = meta["index"] as? Int,
                   let sessionStarted = meta["sessionStarted"] as? Double,
@@ -744,7 +744,7 @@ final class RealtimeHost {
                     // Explicit push-to-talk: the phone commits actual captured audio before response.create.
                     "turn_detection": NSNull(),
                     "noise_reduction": ["type": "near_field"],
-                    "transcription": ["model": "gpt-4o-mini-transcribe"],
+                    "transcription": ["model": "gpt-transcribe"],
                 ],
             ],
             "tools": tools,
