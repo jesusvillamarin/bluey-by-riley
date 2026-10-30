@@ -387,16 +387,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 host.showReply("Couldn't load voices: \(error.localizedDescription)")
                 return
             }
-            // A key with no voice verified for a language still gets every voice to choose from for it.
+            // Every voice is multilingual, and most are verified only for other models, so both lists hold them all:
+            // the ones verified for the language with Flash first.
             let english = voices.filter { $0.languages.contains("en") }
             let spanish = ElevenLabs.spanishVoices(voices)
-            let englishChoices = english.isEmpty ? voices : english
-            let spanishChoices = spanish.isEmpty ? voices : spanish
+            let englishChoices = english + voices.filter { !english.contains($0) }
+            let spanishChoices = spanish + voices.filter { !spanish.contains($0) }
             guard !voices.isEmpty else { host.showReply("Couldn't load voices: ElevenLabs listed none."); return }
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "His Voice"
-            alert.informativeText = "He speaks English in the first voice and Spanish in the second. Latin American Spanish voices are listed first; add more from the ElevenLabs voice library."
+            alert.informativeText = "He speaks English in the first voice and Spanish in the second. Voices verified for each language are listed first, Latin American Spanish first of all; add more from the ElevenLabs voice library (a free plan can't use library voices)."
             @MainActor func popup(_ choices: [ElevenLabs.Voice], current: String?, y: CGFloat) -> NSPopUpButton {
                 let popup = NSPopUpButton(frame: NSRect(x: 80, y: y, width: 300, height: 26), pullsDown: false)
                 popup.addItems(withTitles: choices.map(\.name))
