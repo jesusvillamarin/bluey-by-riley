@@ -48,7 +48,7 @@ final class ElevenLabsSpeechTests: XCTestCase {
         XCTAssertEqual(request.url?.absoluteString, "https://api.elevenlabs.io/v1/text-to-speech/abc123/stream?output_format=pcm_24000")
         XCTAssertEqual(request.value(forHTTPHeaderField: "xi-api-key"), "sk_test")
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: String])
-        XCTAssertEqual(body, ["text": "Hola, qué tal.", "model_id": "eleven_flash_v2_5"], "no language_code: Flash follows the text")
+        XCTAssertEqual(body, ["text": "Hola, qué tal.", "model_id": "eleven_v4_turbo"], "no language_code: the model follows the text")
         let spanish = ElevenLabs.speechRequest("Vale.", voiceID: "abc123", apiKey: "sk_test", language: "es")
         let pinned = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(spanish.httpBody)) as? [String: String])
         XCTAssertEqual(pinned["language_code"], "es")
@@ -93,11 +93,11 @@ final class ElevenLabsSpeechTests: XCTestCase {
     private static let page = #"""
     {"voices":[
       {"voice_id":"a1","name":"Alpha","category":"premade","verified_languages":[
-        {"language":"en","model_id":"eleven_flash_v2_5","accent":"american"},
+        {"language":"en","model_id":"eleven_v4_turbo","accent":"american"},
         {"language":"es","model_id":"eleven_multilingual_v2"}]},
       {"voice_id":"b2","name":"Bravo","verified_languages":[
-        {"language":"en","model_id":"eleven_flash_v2_5"},{"language":"es","model_id":"eleven_flash_v2_5"}]},
-      {"voice_id":"c3","name":"Charlie","verified_languages":[{"language":"es","model_id":"eleven_flash_v2_5"}]},
+        {"language":"en","model_id":"eleven_v4_turbo"},{"language":"es","model_id":"eleven_v4_turbo"}]},
+      {"voice_id":"c3","name":"Charlie","verified_languages":[{"language":"es","model_id":"eleven_v4_turbo"}]},
       {"voice_id":"d4","name":"Delta"},
       {"name":"No id"}
     ],"has_more":true,"next_page_token":"tok2"}
@@ -123,14 +123,14 @@ final class ElevenLabsSpeechTests: XCTestCase {
     private static let spanishPage = #"""
     {"voices":[
       {"voice_id":"gb","name":"George","labels":{"language":"en","accent":"british"},"verified_languages":[
-        {"language":"en","locale":"en-GB","model_id":"eleven_flash_v2_5"},{"language":"es","locale":"es-ES","model_id":"eleven_flash_v2_5"}]},
+        {"language":"en","locale":"en-GB","model_id":"eleven_v4_turbo"},{"language":"es","locale":"es-ES","model_id":"eleven_v4_turbo"}]},
       {"voice_id":"mx","name":"Michael","labels":{"language":"en","accent":"american"},"verified_languages":[
-        {"language":"es","locale":"es-MX","accent":"mexican","model_id":"eleven_flash_v2_5"}]},
+        {"language":"es","locale":"es-MX","accent":"mexican","model_id":"eleven_v4_turbo"}]},
       {"voice_id":"la","name":"Jaime","labels":{"language":"es","accent":"latin american"},"verified_languages":[
         {"language":"es","locale":"es-AR","accent":"latin american","model_id":"eleven_turbo_v2_5"},
-        {"language":"es","locale":"es-AR","accent":"latin american","model_id":"eleven_flash_v2_5"}]},
+        {"language":"es","locale":"es-AR","accent":"latin american","model_id":"eleven_v4_turbo"}]},
       {"voice_id":"en","name":"Bella","labels":{"language":"en","accent":"american"},"verified_languages":[
-        {"language":"en","locale":"en-US","model_id":"eleven_flash_v2_5"}]}
+        {"language":"en","locale":"en-US","model_id":"eleven_v4_turbo"}]}
     ]}
     """#
 

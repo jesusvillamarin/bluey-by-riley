@@ -785,6 +785,10 @@ final class RealtimeHost {
         if mode == .subscription {
             notes.append("Your tools are named mcp__bluey__<name>.")
             notes.append("Every user message was spoken while holding Bluey. When it describes work, call focus_start with task and optional minutes (default 30). Never merely say you're ready.")
+            if speakAloud {
+                // Eleven v4 Turbo reads audio tags and punctuation; it ignores SSML. The bubble strips the tags.
+                notes.append("Your voice understands audio tags in square brackets, in English, placed right before the words they colour: [laughs], [chuckles], [sighs], [whispers], [sarcastic], [excited]. Use at most one per reply, only when it fits, never in place of words. Shape pauses with commas and ellipses (...), never SSML or <break> tags. Write everything as it's said: no markdown, lists, emoji or links; numbers, times and money as spoken words when short.")
+            }
         }
         notes.append("Reply in the language the user just spoke. In English you are the young British guy above. In Spanish, speak natural Latin American Spanish (Mexican/Colombian), same dry, cheeky humour, tú not vos or vosotros.")
         return notes.joined(separator: " ")

@@ -388,7 +388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             // Every voice is multilingual, and most are verified only for other models, so both lists hold them all:
-            // the ones verified for the language with Flash first.
+            // the ones verified for the language with the speech model first.
             let english = voices.filter { $0.languages.contains("en") }
             let spanish = ElevenLabs.spanishVoices(voices)
             let englishChoices = english + voices.filter { !english.contains($0) }

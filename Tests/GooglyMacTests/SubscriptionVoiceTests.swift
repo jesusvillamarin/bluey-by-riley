@@ -158,6 +158,30 @@ final class SubscriptionVoiceTests: XCTestCase {
         XCTAssertEqual(sent.filter { $0.command == "voiceDone" }.count, 1)
     }
 
+    func testAudioTagsAreSpokenButNeverShown() async throws {
+        speakAloud = true
+        let voice = try voice("while IFS= read -r line; do echo '\(Self.text("[laughs] Hola, parce. [sig"))'; echo '\(Self.text("hs] Venga."))'; echo '\(Self.result("[laughs] Hola, parce. [sighs] Venga."))'; done")
+        XCTAssertTrue(voice.handle(Packet(command: "voiceStart", callID: "a")) { _ in })
+        ask(voice, "hola", speech: 1)
+        await wait("voiceAudioEnd 1") { sent.contains { $0.command == "voiceAudioEnd" } }
+        XCTAssertEqual(done(1)?.text, "Hola, parce. Venga.")
+        let shown = sent.filter { $0.command == "voiceDelta" }.compactMap(\.text) + captions.compactMap(\.text)
+        XCTAssertFalse(shown.contains { $0.contains("[") }, "\(shown)")
+        XCTAssertEqual(speech.sentences.joined(separator: " "), "[laughs] Hola, parce. [sighs] Venga.")
+    }
+
+    func testWithoutTags() {
+        XCTAssertEqual(ElevenLabs.withoutTags("[laughs] Hola. [whispers] ojo"), "Hola. ojo")
+        XCTAssertEqual(ElevenLabs.withoutTags("Mira esto [lau"), "Mira esto", "an unfinished tag mid-stream isn't shown either")
+        XCTAssertEqual(ElevenLabs.withoutTags("No tags here."), "No tags here.")
+    }
+
+    func testSpokenNotesAllowAudioTagsOnlyWhenSpeakingInSubscription() {
+        XCTAssertTrue(RealtimeHost.voiceNotes(mode: .subscription, speakAloud: true).contains("[laughs]"))
+        XCTAssertFalse(RealtimeHost.voiceNotes(mode: .subscription, speakAloud: false).contains("[laughs]"))
+        XCTAssertFalse(RealtimeHost.voiceNotes(mode: .fast, speakAloud: true).contains("[laughs]"))
+    }
+
     func testFirstVoiceStartKeepsTheWarmProcess() async throws {
         let voice = try voice(echoing)
         XCTAssertTrue(voice.handle(Packet(command: "voiceStart", callID: "a")) { _ in })

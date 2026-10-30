@@ -30,7 +30,7 @@ Bluey has two voice modes, chosen under **Voice** in the Mac menu:
 - **Subscription (Claude + ElevenLabs)**:
   - **Hearing you:** while you hold his face, the phone streams your speech to ElevenLabs Scribe v2 Realtime. Releasing commits the turn.
   - **Thinking:** the Mac answers the transcript with a warm `claude -p` process on Haiku, using your own Claude Code sign-in.
-  - **Speaking:** ElevenLabs TTS (`eleven_flash_v2_5`) speaks the reply on the phone.
+  - **Speaking:** ElevenLabs TTS (`eleven_v4_turbo`) speaks the reply on the phone, in an English voice or a Latin American Spanish voice depending on the line, with audio tags like `[laughs]` that never show in the bubble.
 
 He answers in the language you speak to him: English, or Latin American (Colombian/Mexican) Spanish.
 

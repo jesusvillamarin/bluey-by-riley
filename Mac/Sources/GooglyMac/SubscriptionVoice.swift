@@ -279,9 +279,10 @@ final class SubscriptionVoice {
         do {
             let reply = try await session.ask(turn.message) { [weak self, turn] event in self?.received(event, for: turn) }
             guard !turn.cancelled else { return }
-            send(Packet(command: "voiceDone", speech: turn.speech, text: reply))
+            // Audio tags are for his voice only; the bubbles show the words.
+            send(Packet(command: "voiceDone", speech: turn.speech, text: ElevenLabs.withoutTags(reply)))
             turn.replyDone = true
-            caption(reply, true)
+            caption(ElevenLabs.withoutTags(reply), true)
             if let audio = turn.audio {
                 // `reply` is the authority. Normally it equals what was streamed, so only the unfinished rest is new;
                 // text that disagrees with what was already spoken is ignored rather than said twice.
@@ -316,8 +317,8 @@ final class SubscriptionVoice {
         switch event {
         case .textDelta(let text):
             turn.text += text
-            send(Packet(command: "voiceDelta", speech: turn.speech, text: turn.text))
-            caption(turn.text, false)
+            send(Packet(command: "voiceDelta", speech: turn.speech, text: ElevenLabs.withoutTags(turn.text)))
+            caption(ElevenLabs.withoutTags(turn.text), false)
             turn.splitter.feed(turn.text).forEach { turn.audio?.say($0) }
         case .toolUse(let name):
             // What he said before the tool (e.g. "…doing some research…") is spoken now, so the wait isn't silent; it was

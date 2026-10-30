@@ -28,11 +28,19 @@ enum ElevenLabs {
 
     // MARK: Speech
 
-    static let speechModel = "eleven_flash_v2_5"
+    /// Real-time and expressive (~100 ms), and it reads audio tags like `[laughs]`.
+    static let speechModel = "eleven_v4_turbo"
     /// 0.25 s of PCM16 at 24 kHz mono, an even number of bytes so every chunk holds whole samples.
     static let chunkBytes = 12_000
 
-    /// The text-to-speech request: raw PCM16 24 kHz mono in the response body. No `language_code`: Flash v2.5 follows the text.
+    /// `text` as shown on screen: audio tags are for the voice only. An unfinished tag at the end (mid-stream) goes too.
+    static func withoutTags(_ text: String) -> String {
+        text.replacingOccurrences(of: #"\[[^\[\]\n]{0,40}(\]|$)"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #" {2,}"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The text-to-speech request: raw PCM16 24 kHz mono in the response body. No `language_code`: the model follows the text.
     /// `language` pins it, for a voice speaking a language it doesn't default to.
     static func speechRequest(_ text: String, voiceID: String, apiKey: String, language: String? = nil) -> URLRequest {
         let voice = voiceID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? voiceID
@@ -94,7 +102,7 @@ enum ElevenLabs {
     }
 
     /// One page of `GET /v2/voices`. Tolerant: entries without an id are skipped; a verified language counts for
-    /// Flash v2.5 when its `model_id` says so or is missing.
+    /// `speechModel` when its `model_id` says so or is missing.
     static func parseVoices(_ data: Data) throws -> (voices: [Voice], next: String?) {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Failure.http(200, "Unexpected voices reply") }
         let voices = (root["voices"] as? [[String: Any]] ?? []).compactMap { entry -> Voice? in
@@ -245,7 +253,7 @@ final class BilingualVoice: Sendable {
     }
 
     func speak(_ text: String) -> AsyncThrowingStream<Data, Error> {
-        let language = SpeechLanguage.detect(text) ?? last.value
+        let language = SpeechLanguage.detect(ElevenLabs.withoutTags(text)) ?? last.value
         last.value = language
         return (language == .es ? spanish : english).speak(text)
     }
