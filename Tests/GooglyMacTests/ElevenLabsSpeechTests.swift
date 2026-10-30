@@ -49,6 +49,9 @@ final class ElevenLabsSpeechTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "xi-api-key"), "sk_test")
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: String])
         XCTAssertEqual(body, ["text": "Hola, qué tal.", "model_id": "eleven_flash_v2_5"], "no language_code: Flash follows the text")
+        let spanish = ElevenLabs.speechRequest("Vale.", voiceID: "abc123", apiKey: "sk_test", language: "es")
+        let pinned = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(spanish.httpBody)) as? [String: String])
+        XCTAssertEqual(pinned["language_code"], "es")
     }
 
     func testChunksAreAQuarterSecondAndTheLastIsShorter() async throws {
@@ -117,7 +120,32 @@ final class ElevenLabsSpeechTests: XCTestCase {
         XCTAssertNil(ElevenLabs.defaultVoice(from: []))
     }
 
-    func testListVoicesFollowsPagesAndAsksForPremade() async throws {
+    private static let spanishPage = #"""
+    {"voices":[
+      {"voice_id":"gb","name":"George","labels":{"language":"en","accent":"british"},"verified_languages":[
+        {"language":"en","locale":"en-GB","model_id":"eleven_flash_v2_5"},{"language":"es","locale":"es-ES","model_id":"eleven_flash_v2_5"}]},
+      {"voice_id":"mx","name":"Michael","labels":{"language":"en","accent":"american"},"verified_languages":[
+        {"language":"es","locale":"es-MX","accent":"mexican","model_id":"eleven_flash_v2_5"}]},
+      {"voice_id":"la","name":"Jaime","labels":{"language":"es","accent":"latin american"},"verified_languages":[
+        {"language":"es","locale":"es-AR","accent":"latin american","model_id":"eleven_turbo_v2_5"},
+        {"language":"es","locale":"es-AR","accent":"latin american","model_id":"eleven_flash_v2_5"}]},
+      {"voice_id":"en","name":"Bella","labels":{"language":"en","accent":"american"},"verified_languages":[
+        {"language":"en","locale":"en-US","model_id":"eleven_flash_v2_5"}]}
+    ]}
+    """#
+
+    func testSpanishDefaultPrefersANativeLatinAmericanVoice() throws {
+        let voices = try ElevenLabs.parseVoices(Data(Self.spanishPage.utf8)).voices
+        XCTAssertEqual(voices[2].native, "es")
+        XCTAssertEqual(voices[2].accent, "latin american")
+        XCTAssertEqual(voices[1].spanishLocales, ["es-mx"])
+        XCTAssertEqual(ElevenLabs.spanishVoices(voices).map(\.id), ["la", "mx", "gb"], "native Latin American, then a Latin locale, then Spain")
+        XCTAssertEqual(ElevenLabs.defaultSpanishVoice(from: voices)?.id, "la")
+        XCTAssertEqual(ElevenLabs.defaultSpanishVoice(from: [voices[0], voices[3]])?.id, "gb")
+        XCTAssertNil(ElevenLabs.defaultSpanishVoice(from: [voices[3]]))
+    }
+
+    func testListVoicesFollowsPagesAndAsksForAllOfTheAccountsVoices() async throws {
         StubProtocol.respond = { request in
             if request.url?.query?.contains("next_page_token=tok2") == true {
                 return (200, Data(#"{"voices":[{"voice_id":"e5","name":"Echo"}],"has_more":false}"#.utf8))
@@ -128,7 +156,7 @@ final class ElevenLabsSpeechTests: XCTestCase {
         XCTAssertEqual(voices.map(\.id), ["a1", "b2", "c3", "d4", "e5"])
         let first = try XCTUnwrap(StubProtocol.seen.first?.url?.absoluteString)
         XCTAssertTrue(first.hasPrefix("https://api.elevenlabs.io/v2/voices?"), first)
-        XCTAssertTrue(first.contains("category=premade") && first.contains("page_size=100"), first)
+        XCTAssertTrue(!first.contains("category=") && first.contains("page_size=100"), "voices added from the library count too: \(first)")
         XCTAssertEqual(StubProtocol.seen.first?.value(forHTTPHeaderField: "xi-api-key"), "k")
     }
 
@@ -192,5 +220,26 @@ final class ElevenLabsSpeechTests: XCTestCase {
         let deadline = Date().addingTimeInterval(2)
         while !ended.value && Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertTrue(ended.value, "leaving the stream cancels the request underneath")
+    }
+
+    // MARK: Bilingual
+
+    func testDetectsTheLanguageOfASentence() {
+        XCTAssertEqual(SpeechLanguage.detect("Hola, ¿cómo estás? Todo bien por aquí, parce."), .es)
+        XCTAssertEqual(SpeechLanguage.detect("Right then, what are we working on today?"), .en)
+        XCTAssertNil(SpeechLanguage.detect("OK."), "too short to tell")
+    }
+
+    func testEachLanguageSpeaksWithItsOwnVoiceAndShortLinesKeepTheLastOne() async throws {
+        let echo: @Sendable (String) -> @Sendable (String, String) -> AsyncThrowingStream<Data, Error> = { tag in
+            { text, voice in AsyncThrowingStream { $0.yield(Data("\(tag)/\(voice):\(text)".utf8)); $0.finish() } }
+        }
+        let voice = BilingualVoice(
+            english: VoiceChoice(saved: { "gb" }, save: { _ in }, list: { [] }, speech: echo("en")),
+            spanish: VoiceChoice(saved: { "la" }, save: { _ in }, list: { [] }, speech: echo("es")))
+        let lines = ["Hola, ¿cómo estás? Todo bien por aquí.", "OK.", "Right then, what are we working on today?", "Vale."]
+        var spoken: [String] = []
+        for line in lines { spoken += try await collect(voice.speak(line)).map { String(decoding: $0, as: UTF8.self) } }
+        XCTAssertEqual(spoken, ["es/la:\(lines[0])", "es/la:OK.", "en/gb:\(lines[2])", "en/gb:Vale."])
     }
 }

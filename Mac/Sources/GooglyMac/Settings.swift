@@ -60,11 +60,17 @@ final class Settings {
         set { defaults.set(newValue, forKey: "speakAloud"); onChange?() }
     }
 
-    /// His ElevenLabs voice. Empty until the first reply is spoken, when the default is picked and saved here
-    /// (from a background thread, so this doesn't call `onChange`).
+    /// His ElevenLabs voice in English. Empty until the first reply is spoken, when the default is picked and saved
+    /// here (from a background thread, so this doesn't call `onChange`).
     var voiceID: String {
         get { defaults.string(forKey: "voiceID") ?? "" }
         set { defaults.set(newValue, forKey: "voiceID") }
+    }
+
+    /// His ElevenLabs voice in Spanish, saved the same way.
+    var spanishVoiceID: String {
+        get { defaults.string(forKey: "spanishVoiceID") ?? "" }
+        set { defaults.set(newValue, forKey: "spanishVoiceID") }
     }
 
     /// The mood picked by hand in the menu.

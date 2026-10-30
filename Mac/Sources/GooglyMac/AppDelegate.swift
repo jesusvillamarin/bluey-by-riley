@@ -126,7 +126,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return SubscriptionVoice.claudeArguments(mcpConfig: configFile, speakAloud: Settings.shared.speakAloud)
         }, workingDirectory: voiceDirectory)
         let host = host
-        let voice = VoiceChoice(saved: { Settings.shared.voiceID }, save: { Settings.shared.voiceID = $0 })
+        let voice = BilingualVoice(
+            english: VoiceChoice(saved: { Settings.shared.voiceID }, save: { Settings.shared.voiceID = $0 },
+                                 speech: { ElevenLabs.speech($0, voiceID: $1, language: "en") }),
+            spanish: VoiceChoice(saved: { Settings.shared.spanishVoiceID }, save: { Settings.shared.spanishVoiceID = $0 },
+                                 pick: { ElevenLabs.defaultSpanishVoice(from: $0) },
+                                 speech: { ElevenLabs.speech($0, voiceID: $1, language: "es") }))
         let subscription = SubscriptionVoice(
             session: session, tokens: ElevenLabsTokens(),
             mode: { Settings.shared.voiceMode },
@@ -382,25 +387,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 host.showReply("Couldn't load voices: \(error.localizedDescription)")
                 return
             }
-            // A key whose voices aren't verified for both languages still gets a list to choose from.
-            let bilingual = ElevenLabs.bilingual(voices)
-            let choices = bilingual.isEmpty ? voices : bilingual
-            guard !choices.isEmpty else { host.showReply("Couldn't load voices: ElevenLabs listed none."); return }
+            // A key with no voice verified for a language still gets every voice to choose from for it.
+            let english = voices.filter { $0.languages.contains("en") }
+            let spanish = ElevenLabs.spanishVoices(voices)
+            let englishChoices = english.isEmpty ? voices : english
+            let spanishChoices = spanish.isEmpty ? voices : spanish
+            guard !voices.isEmpty else { host.showReply("Couldn't load voices: ElevenLabs listed none."); return }
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "His Voice"
-            alert.informativeText = bilingual.isEmpty
-                ? "None of the premade ElevenLabs voices is listed as speaking both English and Spanish. These are all the premade voices it lists."
-                : "Premade ElevenLabs voices that speak English and Spanish."
-            let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 26), pullsDown: false)
-            popup.addItems(withTitles: choices.map(\.name))
-            let current = settings.voiceID.isEmpty ? ElevenLabs.defaultVoice(from: voices)?.id : settings.voiceID
-            if let index = choices.firstIndex(where: { $0.id == current }) { popup.selectItem(at: index) }
-            alert.accessoryView = popup
-            alert.addButton(withTitle: "Use This Voice")
+            alert.informativeText = "He speaks English in the first voice and Spanish in the second. Latin American Spanish voices are listed first; add more from the ElevenLabs voice library."
+            @MainActor func popup(_ choices: [ElevenLabs.Voice], current: String?, y: CGFloat) -> NSPopUpButton {
+                let popup = NSPopUpButton(frame: NSRect(x: 80, y: y, width: 300, height: 26), pullsDown: false)
+                popup.addItems(withTitles: choices.map(\.name))
+                if let index = choices.firstIndex(where: { $0.id == current }) { popup.selectItem(at: index) }
+                return popup
+            }
+            @MainActor func label(_ text: String, y: CGFloat) -> NSTextField {
+                let label = NSTextField(labelWithString: text)
+                label.frame = NSRect(x: 0, y: y + 4, width: 76, height: 18)
+                return label
+            }
+            let englishPopup = popup(englishChoices, current: settings.voiceID.isEmpty ? ElevenLabs.defaultVoice(from: voices)?.id : settings.voiceID, y: 34)
+            let spanishPopup = popup(spanishChoices, current: settings.spanishVoiceID.isEmpty
+                ? ElevenLabs.defaultSpanishVoice(from: voices)?.id : settings.spanishVoiceID, y: 0)
+            let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 60))
+            [label("English", y: 34), englishPopup, label("Spanish", y: 0), spanishPopup].forEach(accessory.addSubview)
+            alert.accessoryView = accessory
+            alert.addButton(withTitle: "Use These Voices")
             alert.addButton(withTitle: "Cancel")
-            guard alert.runModal() == .alertFirstButtonReturn, popup.indexOfSelectedItem >= 0 else { return }
-            settings.voiceID = choices[popup.indexOfSelectedItem].id
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            if englishPopup.indexOfSelectedItem >= 0 { settings.voiceID = englishChoices[englishPopup.indexOfSelectedItem].id }
+            if spanishPopup.indexOfSelectedItem >= 0 { settings.spanishVoiceID = spanishChoices[spanishPopup.indexOfSelectedItem].id }
         }
     }
 
