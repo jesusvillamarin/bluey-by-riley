@@ -41,8 +41,7 @@ Bluey, that interrupts them like an active-break reminder and runs short Duoling
 
 - A reminder or sound during a call (the microphone or camera is in use).
 - A lesson that starts on its own while nobody is at the computer.
-- Surprise bills. This follows the existing decision in the Bluey voice spec: use the Claude subscription, and never
-  fall back silently to a paid API.
+- Surprise bills: the app never switches on its own to a different provider or key than the one the user chose.
 - Lessons that feel like a chat with an AI instead of quick exercises with instant right/wrong feedback.
 
 ## How it gets made
@@ -58,9 +57,24 @@ Bluey, that interrupts them like an active-break reminder and runs short Duoling
   on. Bluey's behaviour must not change: all existing tests must pass after the move. `Palette` already sits in
   `GooglyShared`. `Shared/Fonts` is excluded from that target, and `Fonts.swift` loads fonts from `Bundle.main`, so
   the new build script copies the `.ttf` files into the app bundle, as `build-mac.sh` does.
-- Reuse Bluey's key store (`~/Library/Application Support/Googly/keys.json`), so an ElevenLabs key already entered in
-  Bluey works without entering it again.
-- Menu bar icon with: **Practice now**, **Schedule…**, **Progress**, **Pause reminders today**, **Quit**. Launch at
+- Menu bar icon with: **Practice now**, **Schedule…**, **Progress**, **Keys & agent…**, **Pause reminders today**,
+  **Quit**.
+
+### Keys and agent (founder decision)
+
+- The user enters their own keys in Bluey Teach. They're stored in the app's own store,
+  `~/Library/Application Support/BlueyTeach/keys.json`, with private file permissions, the same way Bluey stores its
+  keys. Bluey's keys aren't shared or read (builder's call).
+- **ElevenLabs key: required.** Without it, reminders don't fire. The first launch opens **Keys & agent…**.
+- **Agent:** the user picks one of three providers. This agent generates lessons, judges alternative answers and
+  writes summaries.
+  - **Claude subscription:** the `claude` CLI with the user's Claude Code sign-in, as Bluey's Subscription voice does.
+  - **Anthropic API key:** default model `claude-haiku-5-5` (builder's call).
+  - **OpenAI API key:** a current small OpenAI model, chosen by the builder.
+- Build one agent interface with three implementations. All return the same lesson, grading and summary JSON.
+- **No switching between providers on its own.** If the chosen agent fails (missing key, signed out, out of credit),
+  the user sees exactly what's wrong and how to fix it. Nothing silently moves to another provider or key.
+- A **Test** button next to each key checks it with a tiny request. Launch at
   login via `SMAppService`, on by default.
 - macOS 14+, matching `Package.swift`.
 
@@ -123,27 +137,27 @@ Bluey, that interrupts them like an active-break reminder and runs short Duoling
 - **Grading:**
   - Multiple choice and word tiles are checked locally.
   - Typed answers: a local check first, with case, punctuation and common contractions normalized. If that fails,
-    Claude judges whether the answer is a valid alternative, so correct alternatives aren't marked wrong.
+    the agent judges whether the answer is a valid alternative, so correct alternatives aren't marked wrong.
   - Speaking: the transcript is compared word by word, with tolerance for small differences.
-- **Generation:** Claude (`claude -p`, the founder's subscription) returns the whole lesson as one JSON object with a
-  fixed schema. It reuses the env-var scrubbing in `ClaudeVoiceSession.environment(base:binary:)`. It also needs a
-  one-shot variant of `ClaudeStream.arguments`, because that function is built for stream-json input and requires an
-  MCP config. Generation starts **when
+- **Generation:** the chosen agent returns the whole lesson as one JSON object with a fixed schema.
+  - With the Claude subscription, it reuses the env-var scrubbing in `ClaudeVoiceSession.environment(base:binary:)`.
+  - It also needs a one-shot variant of `ClaudeStream.arguments`, because that function is built for stream-json
+    input and requires an MCP config. Generation starts **when
   the pill appears**, so the lesson is ready by the time the founder taps Start. If generation fails, show a short
-  error with a retry button. There is no paid fallback.
+  error with a retry button. Nothing falls back to another provider.
 - **Instructions:** written in Spanish while the founder's level is low, moving to English as the level rises.
   Exercise content is English.
-- **Voice and speech recognition: ElevenLabs for both** (founder decision). Both use the ElevenLabs key Bluey
-  already stores.
+- **Voice and speech recognition: ElevenLabs for both, always** (founder decision). Both use the ElevenLabs key
+  entered in Bluey Teach. No macOS voice or Apple speech recognition is used anywhere in the app.
   - **Listening:** ElevenLabs TTS reusing `ElevenLabs.swift`, with an English voice. Fetch the audio for the
     lesson's listening exercises while the pill shows, right after the lesson is generated. Slow replay asks
     ElevenLabs for a slower speed (builder's call).
   - **Speaking:** the founder holds a mic button while speaking. On release, the clip goes to Scribe v2 *batch*,
     reusing `MeetingNotes.scribeBatch`'s request (builder's call: batch is cheaper than Realtime and the clips are
     a few seconds long).
-  - **If the key is missing or ElevenLabs fails** (builder's call): there's no bill, so a quiet fallback is fine.
-    Listening switches to the free macOS voice (`AVSpeechSynthesizer`). Speaking exercises are swapped for writing
-    exercises in that lesson. A one-line notice explains why.
+  - **No fallback voice** (founder decision). If ElevenLabs fails while the lesson is being prepared, the pill says
+    so and offers **Retry**, or **Keys & agent…** when the key is the problem. If it fails in the middle of an
+    exercise, that exercise shows the error with **Retry**. Nothing switches to a macOS voice.
 
 ### Memory
 
@@ -156,7 +170,7 @@ Bluey, that interrupts them like an active-break reminder and runs short Duoling
   - `sessions[]`: an append-only list. Each entry records the date, duration, whether it was finished, every exercise
     with the founder's answer and the result, and the summary.
   - `schedule` settings and `streak` live in the app's preferences, not in memory.
-- **Summary agent:** after each lesson, a second `claude -p` call receives that session's results and the current
+- **Summary agent:** after each lesson, a second call to the chosen agent receives that session's results and the current
   profile. It returns:
   - a summary in Spanish with 2–4 points to improve
   - the updated profile, including level changes and review dates
@@ -172,8 +186,9 @@ Bluey, that interrupts them like an active-break reminder and runs short Duoling
 
 ## Cost
 
-- Lesson generation, grading of alternative answers and summaries run on the founder's Claude subscription. No API
-  bill.
+- Lesson generation, grading of alternative answers and summaries use the agent the user chose. On the Claude
+  subscription there's no extra bill. With an Anthropic or OpenAI key, each lesson is a few small requests billed to
+  that key.
 - Listening and speaking use ElevenLabs, paid per use (founder decision). Rough cost at 3 lessons a day: about 1,500
   TTS characters (Flash v2.5 at $0.04/1K) and 2 minutes of Scribe batch ($0.22/h), which is about $0.07 a day. The
   real model and price come from `ElevenLabs.swift` at build time.
